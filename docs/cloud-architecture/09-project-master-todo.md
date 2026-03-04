@@ -18,17 +18,17 @@
 
 ## 3. 认证与项目域
 
-- [ ] 完成用户注册、登录、JWT 鉴权与权限校验
-- [ ] 完成项目创建、列表、详情、配置更新 API
-- [ ] 完成多租户隔离规则（user_id/project_id 级别）
-- [ ] 完成 provider_config 的项目级配置读写
+- [x] 完成用户注册、登录、JWT 鉴权与权限校验
+- [x] 完成项目创建、列表、详情、配置更新 API
+- [x] 完成多租户隔离规则（user_id/project_id 级别）
+- [x] 完成 provider_config 的项目级配置读写
 
 ## 4. 事件中心与无状态接口
 
-- [ ] 完成 `/api/v1/events/publish` 事件发布接口
-- [ ] 完成 `/api/v1/events` 事件查询接口（时间窗、类型、来源过滤）
-- [ ] 完成事件幂等键、防重放、签名校验
-- [ ] 完成 Kairo 对外导出接口（publishEvent/sendUserMessage/queryEvents/invokeAgent）
+- [x] 完成 `/api/v1/events/publish` 事件发布接口
+- [x] 完成 `/api/v1/events` 事件查询接口（时间窗、类型、来源过滤）
+- [x] 完成事件幂等键、防重放、签名校验
+- [x] 完成 Kairo 对外导出接口（publishEvent/sendUserMessage/queryEvents/invokeAgent）
 
 ## 5. 会话记忆与对象存储文件系统
 

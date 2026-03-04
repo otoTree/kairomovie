@@ -1,9 +1,10 @@
+import { randomUUID } from "crypto";
 import mitt, { type Emitter } from "mitt";
 import type { EventBus, EventHandler, EventFilter, EventStore, KairoEvent } from "./types";
 
 // Helper to generate UUID
 function uuid() {
-  return crypto.randomUUID();
+  return randomUUID();
 }
 
 type WildcardSubscription = {
@@ -20,7 +21,7 @@ export class InMemoryGlobalBus implements EventBus {
     this.emitter = mitt();
     
     // Hook into all events to handle wildcard subscriptions and persistence
-    this.emitter.on("*", (type, event) => {
+    this.emitter.on("*", (type: string, event: KairoEvent) => {
       // 1. Persist to store
       // We don't await here to not block the event loop, but we might want to catch errors
       this.store.append(event).catch(err => {

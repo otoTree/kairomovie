@@ -1,0 +1,37 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": [
+    "next-env.d.ts",
+    "src/app/**/*.ts",
+    "src/app/**/*.tsx",
+    "src/db/**/*.ts",
+    "src/lib/**/*.ts",
+    "src/kairo/interface.ts",
+    "src/kairo/next/runtime.ts",
+    "src/kairo/core/**/*.ts",
+    "src/kairo/domains/agent/**/*.ts",
+    "src/kairo/domains/ai/**/*.ts",
+    "src/kairo/domains/events/**/*.ts",
+    "src/kairo/domains/memory/**/*.ts",
+    "src/kairo/domains/vault/**/*.ts",
+    "src/kairo/domains/mcp/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.integration.test.ts",
+    "src/kairo/domains/database/**",
+    "src/kairo/domains/device/**",
+    "src/kairo/domains/kernel/**",
+    "src/kairo/domains/sandbox/**",
+    "src/kairo/domains/server/**",
+    "src/kairo/domains/skills/**",
+    "src/kairo/domains/ui/**",
+    "src/kairo/index.ts"
+  ]
+}
+

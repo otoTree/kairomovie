@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { pgTable, text, timestamp, uuid, jsonb, pgEnum, primaryKey } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, uuid, jsonb, pgEnum, primaryKey, uniqueIndex, index } from 'drizzle-orm/pg-core';
 
 export const taskStatusEnum = pgEnum('task_status', ['pending', 'running', 'completed', 'failed']);
 
@@ -21,6 +21,51 @@ export const projects = pgTable('projects', {
   settings: jsonb('settings').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
+
+export const projectProviderConfigs = pgTable(
+  'project_provider_configs',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    provider: text('provider').notNull(),
+    config: jsonb('config').$type<unknown>().notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('uniq_project_provider').on(table.projectId, table.provider),
+    index('idx_project_provider_project').on(table.projectId),
+  ]
+);
+
+export const apiEvents = pgTable(
+  'api_events',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    type: text('type').notNull(),
+    source: text('source').notNull(),
+    data: jsonb('data').$type<unknown>().notNull().default(sql`'{}'::jsonb`),
+    correlationId: text('correlation_id').notNull(),
+    causationId: text('causation_id'),
+    traceId: text('trace_id'),
+    spanId: text('span_id'),
+    idempotencyKey: text('idempotency_key'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('uniq_api_events_user_idempotency').on(table.userId, table.idempotencyKey),
+    index('idx_api_events_user_time').on(table.userId, table.createdAt),
+    index('idx_api_events_project_time').on(table.projectId, table.createdAt),
+    index('idx_api_events_type').on(table.type),
+    index('idx_api_events_correlation').on(table.correlationId),
+  ]
+);
 
 export const agentTasks = pgTable('agent_tasks', {
   id: uuid('id').defaultRandom().primaryKey(),

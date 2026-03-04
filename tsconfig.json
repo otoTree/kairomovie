@@ -30,5 +30,18 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.integration.test.ts",
+    "src/kairo/domains/database/**",
+    "src/kairo/domains/device/**",
+    "src/kairo/domains/kernel/**",
+    "src/kairo/domains/sandbox/**",
+    "src/kairo/domains/server/**",
+    "src/kairo/domains/skills/**",
+    "src/kairo/domains/ui/**",
+    "src/kairo/index.ts"
+  ]
 }
