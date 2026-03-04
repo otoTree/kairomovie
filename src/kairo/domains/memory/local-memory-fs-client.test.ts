@@ -40,6 +40,46 @@ describe("LocalMemoryFsClient", () => {
     expect(removed.success).toBe(true);
   });
 
+  it("should keep versions and support rollback", async () => {
+    const basePath = await makeTempDir();
+    const client = new LocalMemoryFsClient(basePath);
+    const userId = "user-1";
+
+    const w1 = await client.write({ path: "notes/a.txt", userId, content: "v1", mode: "overwrite" });
+    const w2 = await client.write({ path: "notes/a.txt", userId, content: "v2", mode: "overwrite" });
+    expect(w1.version).toBe(1);
+    expect(w2.version).toBe(2);
+
+    const versions1 = await client.listVersions({ path: "notes/a.txt", userId });
+    expect(versions1.versions.map((v) => v.version)).toEqual([2, 1]);
+
+    const readV1 = await client.readVersion({ path: "notes/a.txt", version: 1, userId });
+    expect(readV1.content).toBe("v1");
+
+    const rolled = await client.rollback({ path: "notes/a.txt", toVersion: 1, userId });
+    expect(rolled.success).toBe(true);
+    expect(rolled.toVersion).toBe(1);
+    expect(rolled.version).toBe(3);
+
+    const readAfter = await client.read({ path: "notes/a.txt", userId });
+    expect(readAfter.content).toBe("v1");
+
+    const moved = await client.move({ fromPath: "notes/a.txt", toPath: "notes/b.txt", userId });
+    expect(moved.success).toBe(true);
+
+    const versions2 = await client.listVersions({ path: "notes/b.txt", userId });
+    expect(versions2.versions.map((v) => v.version)).toEqual([3, 2, 1]);
+
+    const removed = await client.remove({ path: "notes/b.txt", userId });
+    expect(removed.success).toBe(true);
+
+    const rolledAfterDelete = await client.rollback({ path: "notes/b.txt", toVersion: 2, userId });
+    expect(rolledAfterDelete.success).toBe(true);
+
+    const readRestored = await client.read({ path: "notes/b.txt", userId });
+    expect(readRestored.content).toBe("v2");
+  });
+
   it("should isolate project scope from user scope", async () => {
     const basePath = await makeTempDir();
     const client = new LocalMemoryFsClient(basePath);
@@ -80,4 +120,3 @@ describe("LocalMemoryFsClient", () => {
     ).rejects.toBeDefined();
   });
 });
-

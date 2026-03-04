@@ -12,6 +12,13 @@ export type MemoryFileInfo = {
   tags?: string[];
 };
 
+export type MemoryFileVersionInfo = {
+  version: number;
+  etag: string;
+  size: number;
+  updatedAt: string;
+};
+
 export type MemoryReadResult = {
   path: string;
   content: string;
@@ -49,6 +56,19 @@ export interface MemoryFsClient {
     offset?: number;
     limit?: number;
   }): Promise<MemoryReadResult>;
+  listVersions(input: {
+    path: string;
+    userId: string;
+    projectId?: string;
+  }): Promise<{ path: string; versions: MemoryFileVersionInfo[] }>;
+  readVersion(input: {
+    path: string;
+    version: number;
+    userId: string;
+    projectId?: string;
+    offset?: number;
+    limit?: number;
+  }): Promise<MemoryReadResult & { version: number; etag: string }>;
   write(input: {
     path: string;
     userId: string;
@@ -56,6 +76,12 @@ export interface MemoryFsClient {
     content: string;
     mode: WriteMode;
   }): Promise<MemoryWriteResult>;
+  rollback(input: {
+    path: string;
+    toVersion: number;
+    userId: string;
+    projectId?: string;
+  }): Promise<{ success: boolean; path: string; toVersion: number; version: number; etag: string; size: number }>;
   move(input: {
     fromPath: string;
     toPath: string;
@@ -107,6 +133,22 @@ function readOptionalNumber(record: Record<string, unknown>, key: string): numbe
     return undefined;
   }
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(`参数 ${key} 无效`);
+  }
+  return Math.floor(value);
+}
+
+function readNumber(record: Record<string, unknown>, key: string): number {
+  const value = record[key];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`参数 ${key} 无效`);
+  }
+  return value;
+}
+
+function readPositiveInt(record: Record<string, unknown>, key: string): number {
+  const value = readNumber(record, key);
+  if (value <= 0) {
     throw new Error(`参数 ${key} 无效`);
   }
   return Math.floor(value);
@@ -213,6 +255,66 @@ export function registerMemoryFsTools(agent: AgentPlugin, client: MemoryFsClient
 
   agent.registerSystemTool(
     {
+      name: "memory_fs_versions",
+      description: "列出记忆文件历史版本",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          userId: { type: "string" },
+          projectId: { type: "string" },
+        },
+        required: ["path", "userId"],
+      },
+    },
+    async (args: unknown) => {
+      if (!isRecord(args)) {
+        throw new Error("参数格式无效");
+      }
+      const owner = parseOwner(args);
+      return client.listVersions({
+        path: readString(args, "path"),
+        userId: owner.userId,
+        projectId: owner.projectId,
+      });
+    }
+  );
+
+  agent.registerSystemTool(
+    {
+      name: "memory_fs_read_version",
+      description: "读取记忆文件指定版本内容，支持分段",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          version: { type: "number" },
+          userId: { type: "string" },
+          projectId: { type: "string" },
+          offset: { type: "number" },
+          limit: { type: "number" },
+        },
+        required: ["path", "version", "userId"],
+      },
+    },
+    async (args: unknown) => {
+      if (!isRecord(args)) {
+        throw new Error("参数格式无效");
+      }
+      const owner = parseOwner(args);
+      return client.readVersion({
+        path: readString(args, "path"),
+        version: readPositiveInt(args, "version"),
+        userId: owner.userId,
+        projectId: owner.projectId,
+        offset: readOptionalNumber(args, "offset"),
+        limit: readOptionalNumber(args, "limit"),
+      });
+    }
+  );
+
+  agent.registerSystemTool(
+    {
       name: "memory_fs_write",
       description: "写入或追加记忆文件内容",
       inputSchema: {
@@ -232,13 +334,75 @@ export function registerMemoryFsTools(agent: AgentPlugin, client: MemoryFsClient
         throw new Error("参数格式无效");
       }
       const owner = parseOwner(args);
-      return client.write({
+      const mode = readWriteMode(args);
+      const result = await client.write({
         path: readString(args, "path"),
         userId: owner.userId,
         projectId: owner.projectId,
         content: readString(args, "content"),
-        mode: readWriteMode(args),
+        mode,
       });
+      await agent.globalBus.publish({
+        type: "kairo.memory_fs.write",
+        source: "memory-fs-tools",
+        data: {
+          scope: owner.projectId ? "project" : "user",
+          userId: owner.userId,
+          projectId: owner.projectId,
+          path: result.path,
+          etag: result.etag,
+          version: result.version,
+          size: result.size,
+          mode,
+        },
+      });
+      return result;
+    }
+  );
+
+  agent.registerSystemTool(
+    {
+      name: "memory_fs_rollback",
+      description: "将记忆文件回滚到指定历史版本（会生成一个新版本）",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          toVersion: { type: "number" },
+          userId: { type: "string" },
+          projectId: { type: "string" },
+        },
+        required: ["path", "toVersion", "userId"],
+      },
+    },
+    async (args: unknown) => {
+      if (!isRecord(args)) {
+        throw new Error("参数格式无效");
+      }
+      const owner = parseOwner(args);
+      const result = await client.rollback({
+        path: readString(args, "path"),
+        toVersion: readPositiveInt(args, "toVersion"),
+        userId: owner.userId,
+        projectId: owner.projectId,
+      });
+      if (result.success) {
+        await agent.globalBus.publish({
+          type: "kairo.memory_fs.rollback",
+          source: "memory-fs-tools",
+          data: {
+            scope: owner.projectId ? "project" : "user",
+            userId: owner.userId,
+            projectId: owner.projectId,
+            path: result.path,
+            toVersion: result.toVersion,
+            version: result.version,
+            etag: result.etag,
+            size: result.size,
+          },
+        });
+      }
+      return result;
     }
   );
 
@@ -262,12 +426,26 @@ export function registerMemoryFsTools(agent: AgentPlugin, client: MemoryFsClient
         throw new Error("参数格式无效");
       }
       const owner = parseOwner(args);
-      return client.move({
+      const result = await client.move({
         fromPath: readString(args, "fromPath"),
         toPath: readString(args, "toPath"),
         userId: owner.userId,
         projectId: owner.projectId,
       });
+      if (result.success) {
+        await agent.globalBus.publish({
+          type: "kairo.memory_fs.move",
+          source: "memory-fs-tools",
+          data: {
+            scope: owner.projectId ? "project" : "user",
+            userId: owner.userId,
+            projectId: owner.projectId,
+            fromPath: result.fromPath,
+            toPath: result.toPath,
+          },
+        });
+      }
+      return result;
     }
   );
 
@@ -290,11 +468,24 @@ export function registerMemoryFsTools(agent: AgentPlugin, client: MemoryFsClient
         throw new Error("参数格式无效");
       }
       const owner = parseOwner(args);
-      return client.remove({
+      const result = await client.remove({
         path: readString(args, "path"),
         userId: owner.userId,
         projectId: owner.projectId,
       });
+      if (result.success) {
+        await agent.globalBus.publish({
+          type: "kairo.memory_fs.delete",
+          source: "memory-fs-tools",
+          data: {
+            scope: owner.projectId ? "project" : "user",
+            userId: owner.userId,
+            projectId: owner.projectId,
+            path: result.path,
+          },
+        });
+      }
+      return result;
     }
   );
 

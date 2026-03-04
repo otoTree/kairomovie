@@ -35,7 +35,7 @@
 - [x] 完成 session 记忆投影层（基于会话自动组装 context 事件）
 - [x] 完成记忆文件系统 API 网关（list/read/write/move/delete/search）
 - [x] 完成 Agent 记忆工具注册与权限边界控制
-- [ ] 完成记忆版本化、审计事件与回滚能力
+- [x] 完成记忆版本化、审计事件与回滚能力
 
 ## 6. ToAPIs 工具链与长任务回投
 
