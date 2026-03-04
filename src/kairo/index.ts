@@ -2,7 +2,6 @@ import { Application } from "./core/app";
 import { HealthPlugin } from "./domains/health/health.plugin";
 import { DatabasePlugin } from "./domains/database/database.plugin";
 import { AIPlugin } from "./domains/ai/ai.plugin";
-import { OllamaProvider } from "./domains/ai/providers/ollama";
 import { OpenAIProvider } from "./domains/ai/providers/openai";
 import { AgentPlugin } from "./domains/agent/agent.plugin";
 import { ServerPlugin } from "./domains/server/server.plugin";
@@ -16,12 +15,14 @@ import { MemoryPlugin } from "./domains/memory/memory.plugin";
 import { VaultPlugin } from "./domains/vault/vault.plugin";
 import { ObservabilityPlugin } from "./domains/observability/observability.plugin";
 import { CompositorPlugin } from "./domains/ui/compositor.plugin";
+import { randomBytes } from "crypto";
+import { writeFileSync } from "fs";
 import path from "path";
 
 const app = new Application();
 
 // Bootstrap the application
-async function bootstrap() {
+export async function bootstrapStandaloneKairo() {
   try {
     // Configuration - Paths
     const PROJECT_ROOT = process.cwd();
@@ -106,15 +107,14 @@ async function bootstrap() {
 
     // Setup Server
     const token = process.env.KAIRO_TOKEN || (() => {
-        const generated = require("crypto").randomBytes(32).toString("hex");
+        const generated = randomBytes(32).toString("hex");
         console.warn("[Security] KAIRO_TOKEN 未设置，已自动生成临时密钥。生产环境请通过环境变量配置。");
         return generated;
     })();
 
     // 将 token 写入文件，供原生应用（如 kairo-agent-ui）读取
     try {
-      const fs = require("fs");
-      fs.writeFileSync("/run/kairo/ws.token", token, { mode: 0o600 });
+      writeFileSync("/run/kairo/ws.token", token, { mode: 0o600 });
       console.log("[Server] WebSocket token 已写入 /run/kairo/ws.token");
     } catch (e) {
       console.warn("[Server] 无法写入 token 文件:", e);
@@ -169,5 +169,3 @@ async function bootstrap() {
     process.exit(1);
   }
 }
-
-bootstrap();
