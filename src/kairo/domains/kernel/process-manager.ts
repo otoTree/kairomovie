@@ -125,7 +125,7 @@ export class ProcessManager extends EventEmitter {
     }
 
     // Handle exit
-    proc.exited.then(async (code) => {
+    proc.exited.then(async (code: number) => {
         if (this.stateRepo) {
           try {
             const state = await this.stateRepo.get<ProcessState>(`process:${id}`);

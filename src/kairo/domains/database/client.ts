@@ -1,37 +1,26 @@
-import { Database } from 'bun:sqlite';
-import { Kysely } from 'kysely';
-import { BunSqliteDialect } from 'kysely-bun-sqlite';
-import type { Database as DatabaseType } from './types';
+const LOCAL_DATABASE_REMOVED_MESSAGE =
+  'Kairo local SQLite 特性已移除。请改用云端数据库实现。'
 
-// Singleton instance
-let dbInstance: Kysely<DatabaseType> | null = null;
+let dbInstance: any | null = null
 
-export function getDatabase(): Kysely<DatabaseType> {
-  if (!dbInstance) {
-    throw new Error('Database not initialized. Call initDatabase() first.');
-  }
-  return dbInstance;
+export function bindDatabase(database: any) {
+  dbInstance = database
 }
 
-export function initDatabase(dbPath: string): Kysely<DatabaseType> {
-  if (dbInstance) {
-    return dbInstance;
+export function getDatabase(): any {
+  if (!dbInstance) {
+    throw new Error(LOCAL_DATABASE_REMOVED_MESSAGE)
   }
+  return dbInstance
+}
 
-  const dialect = new BunSqliteDialect({
-    database: new Database(dbPath),
-  });
-
-  dbInstance = new Kysely<DatabaseType>({
-    dialect,
-  });
-  
-  return dbInstance;
+export function initDatabase(_dbPath: string): never {
+  throw new Error(LOCAL_DATABASE_REMOVED_MESSAGE)
 }
 
 export async function closeDatabase() {
-    if (dbInstance) {
-        await dbInstance.destroy();
-        dbInstance = null;
-    }
+  if (dbInstance && typeof dbInstance.destroy === 'function') {
+    await dbInstance.destroy()
+  }
+  dbInstance = null
 }

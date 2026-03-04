@@ -100,7 +100,7 @@ export class DBusBridge extends EventEmitter {
 
       rootLogger.info('[DBusBridge] 已连接到系统 D-Bus');
     } catch (err) {
-      rootLogger.warn('[DBusBridge] 连接 D-Bus 失败（可能不在 Linux 环境）:', err);
+      rootLogger.warn('[DBusBridge] 连接 D-Bus 失败（可能不在 Linux 环境）:', { error: String(err) });
       this.connected = false;
     }
   }
@@ -166,7 +166,7 @@ export class DBusBridge extends EventEmitter {
         rootLogger.info('[DBusBridge] 已订阅 login1 信号');
       }
     } catch (err) {
-      rootLogger.warn('[DBusBridge] 设置信号监听失败:', err);
+      rootLogger.warn('[DBusBridge] 设置信号监听失败:', { error: String(err) });
     }
   }
 

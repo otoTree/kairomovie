@@ -85,7 +85,7 @@ export class ShellSession extends EventEmitter {
     handleOutput(stdout.getReader());
     handleOutput(stderr.getReader());
     
-    this.process.exited.then((code) => {
+    this.process.exited.then((code: number) => {
       console.log(`[ShellSession:${this.id}] Exited with code ${code}`);
       this.emit("exit", code);
     });

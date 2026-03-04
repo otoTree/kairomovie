@@ -31,7 +31,7 @@ type SystemMonitorEvents = {
 export class SystemMonitor implements ISystemMonitor {
   private lastCpuUsage: { idle: number; total: number } | null = null;
   public readonly events: Emitter<SystemMonitorEvents> = mitt<SystemMonitorEvents>();
-  private timer: Timer | null = null;
+  private timer: ReturnType<typeof setInterval> | null = null;
 
   async getMetrics(): Promise<SystemMetrics> {
     const totalMem = os.totalmem();

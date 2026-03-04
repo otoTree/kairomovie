@@ -72,17 +72,17 @@ export class IPCServer {
     this.server = listen({
       unix: this.socketPath,
       socket: {
-        data: (socket, data) => this.handleData(socket, data),
-        open: (socket) => {
+        data: (socket: Socket, data: Buffer) => this.handleData(socket, data),
+        open: (socket: Socket) => {
           console.log('[IPC] 客户端已连接');
           this.connections.add(socket);
           this.buffers.set(socket, Buffer.alloc(0));
         },
-        close: (socket) => {
+        close: (socket: Socket) => {
           console.log('[IPC] 客户端已断开');
           this.cleanupSocket(socket);
         },
-        error: (socket, error) => {
+        error: (socket: Socket, error: unknown) => {
           console.error('[IPC] Socket 错误:', error);
           this.cleanupSocket(socket);
         }

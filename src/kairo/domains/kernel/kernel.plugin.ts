@@ -111,7 +111,7 @@ export class KernelPlugin implements Plugin {
 
       // 启动 D-Bus 桥接
       await this.dbusBridge.connect(agentPlugin.globalBus).catch((e: unknown) => {
-        rootLogger.warn("[Kernel] D-Bus bridge failed to connect:", e);
+        rootLogger.warn("[Kernel] D-Bus bridge failed to connect:", { error: String(e) });
       });
 
     } catch (e) {

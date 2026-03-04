@@ -9,7 +9,7 @@ export class StateRepository {
         value: JSON.stringify(value),
         updated_at: Date.now(),
       })
-      .onConflict((oc) => oc
+      .onConflict((oc: any) => oc
         .column('key')
         .doUpdateSet({
           value: JSON.stringify(value),
@@ -37,7 +37,7 @@ export class StateRepository {
       .where('key', 'like', `${prefix}%`)
       .execute();
     
-    return results.map(row => ({
+    return results.map((row: any) => ({
       key: row.key,
       value: JSON.parse(row.value),
     }));

@@ -4,7 +4,6 @@ import type { LogEntry } from "./types";
 import { KairoLogger } from "./logger";
 import type { KairoEvent } from "../events";
 import type { AgentPlugin } from "../agent/agent.plugin";
-import type { KernelPlugin } from "../kernel/kernel.plugin";
 import fs from "fs/promises";
 import path from "path";
 
@@ -40,6 +39,13 @@ export class ObservabilityPlugin implements Plugin {
   private app?: Application;
   private logBuffer = new RingBuffer<LogEntry>(1000);
   private eventBuffer = new RingBuffer<KairoEvent>(1000);
+
+  private getKernelService() {
+    return this.app?.getService<{
+      systemMonitor: { getMetrics: () => Promise<unknown> };
+      shellManager: { listSessions: () => unknown };
+    }>("kernel");
+  }
 
   setup(app: Application) {
     this.app = app;
@@ -103,7 +109,7 @@ export class ObservabilityPlugin implements Plugin {
 
   private async getSystemInfo() {
       try {
-        const kernel = this.app?.getService<KernelPlugin>("kernel");
+        const kernel = this.getKernelService();
         if (kernel) {
             return await kernel.systemMonitor.getMetrics();
         }
@@ -115,7 +121,7 @@ export class ObservabilityPlugin implements Plugin {
 
   private getProcessInfo() {
       try {
-        const kernel = this.app?.getService<KernelPlugin>("kernel");
+        const kernel = this.getKernelService();
         if (kernel) {
             return {
                 sessions: kernel.shellManager.listSessions()

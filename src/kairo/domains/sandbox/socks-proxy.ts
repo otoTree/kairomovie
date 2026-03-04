@@ -20,7 +20,7 @@ export function createSocksProxyServer(
 ): SocksProxyWrapper {
   const socksServer = createServer()
 
-  socksServer.setRulesetValidator(async conn => {
+  socksServer.setRulesetValidator(async (conn: any) => {
     try {
       const hostname = conn.destAddress
       const port = conn.destPort
@@ -85,7 +85,7 @@ export function createSocksProxyServer(
     },
     async close(): Promise<void> {
       return new Promise((resolve, reject) => {
-        socksServer.close(error => {
+        socksServer.close((error: any) => {
           if (error) {
             // Only reject for actual errors, not for "already closed" states
             // Check for common "already closed" error patterns
