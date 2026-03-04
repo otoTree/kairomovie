@@ -2,8 +2,11 @@ import { randomUUID } from "crypto"
 import { Application } from "@/kairo/core/app"
 import { AgentPlugin } from "@/kairo/domains/agent/agent.plugin"
 import { AIPlugin } from "@/kairo/domains/ai/ai.plugin"
+import type { AIProvider } from "@/kairo/domains/ai/types"
 import { OpenAIProvider } from "@/kairo/domains/ai/providers/openai"
+import { ToAPIsProvider } from "@/kairo/domains/ai/providers/toapis"
 import { MemoryPlugin } from "@/kairo/domains/memory/memory.plugin"
+import { ToAPIsPlugin } from "@/kairo/domains/toapis/toapis.plugin"
 import { VaultPlugin } from "@/kairo/domains/vault/vault.plugin"
 import type { KairoEvent } from "@/kairo/domains/events"
 import type { EventFilter } from "@/kairo/domains/events"
@@ -58,7 +61,16 @@ export class NextKairoRuntime {
       baseUrl: env.openaiBaseUrl,
       apiKey: env.openaiApiKey,
     })
-    const providers = [openai]
+    const providers: AIProvider[] = [openai]
+    if (env.toapisApiKey) {
+      providers.push(
+        new ToAPIsProvider({
+          apiKey: env.toapisApiKey,
+          baseUrl: env.toapisBaseUrl,
+          defaultModel: env.toapisModelName,
+        })
+      )
+    }
     const embeddingBaseUrl = env.openaiEmbeddingBaseUrl
     const embeddingApiKey = env.openaiEmbeddingApiKey || env.openaiApiKey
     if (embeddingBaseUrl) {
@@ -72,7 +84,10 @@ export class NextKairoRuntime {
       )
     }
 
-    await this.app.use(new AIPlugin(providers))
+    await this.app.use(new AIPlugin(providers, env.kairoDefaultAiProvider))
+    if (env.toapisApiKey) {
+      await this.app.use(new ToAPIsPlugin())
+    }
     await this.app.use(new MemoryPlugin())
     await this.app.use(new VaultPlugin())
     await this.app.use(this.agent)

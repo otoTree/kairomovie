@@ -4,6 +4,7 @@ type AppEnv = {
   tokenExpiresInSeconds: number
   nodeEnv: "development" | "test" | "production"
   kairoEventSigningSecret?: string
+  kairoDefaultAiProvider?: string
   deployment: "dev" | "staging" | "prod"
   openaiApiKey?: string
   openaiBaseUrl: string
@@ -11,6 +12,9 @@ type AppEnv = {
   openaiEmbeddingBaseUrl?: string
   openaiEmbeddingApiKey?: string
   openaiEmbeddingModelName?: string
+  toapisApiKey?: string
+  toapisBaseUrl: string
+  toapisModelName: string
   tosEndpoint?: string
   tosBucket?: string
   tosAccessKey?: string
@@ -77,6 +81,7 @@ export function getAppEnv(): AppEnv {
     tokenExpiresInSeconds: getOptionalNumberEnv("AUTH_TOKEN_EXPIRES_IN_SECONDS", 60 * 60 * 24 * 7),
     nodeEnv,
     kairoEventSigningSecret: getOptionalEnv("KAIRO_EVENT_SIGNING_SECRET"),
+    kairoDefaultAiProvider: getOptionalEnv("KAIRO_AI_DEFAULT_PROVIDER"),
     deployment,
     openaiApiKey: getOptionalEnv("OPENAI_API_KEY"),
     openaiBaseUrl: process.env.OPENAI_BASE_URL?.trim() || "https://api.deepseek.com/v1",
@@ -84,6 +89,9 @@ export function getAppEnv(): AppEnv {
     openaiEmbeddingBaseUrl: getOptionalEnv("OPENAI_EMBEDDING_BASE_URL"),
     openaiEmbeddingApiKey: getOptionalEnv("OPENAI_EMBEDDING_API_KEY"),
     openaiEmbeddingModelName: getOptionalEnv("OPENAI_EMBEDDING_MODEL_NAME"),
+    toapisApiKey: getOptionalEnv("TOAPIS_API_KEY"),
+    toapisBaseUrl: process.env.TOAPIS_BASE_URL?.trim() || "https://toapis.com/v1",
+    toapisModelName: process.env.TOAPIS_MODEL_NAME?.trim() || "gpt-5",
     tosEndpoint: getOptionalEnv("TOS_ENDPOINT"),
     tosBucket: getOptionalEnv("TOS_BUCKET"),
     tosAccessKey: getOptionalEnv("TOS_ACCESS_KEY"),

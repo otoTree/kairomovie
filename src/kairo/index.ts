@@ -2,7 +2,9 @@ import { Application } from "./core/app";
 import { HealthPlugin } from "./domains/health/health.plugin";
 import { DatabasePlugin } from "./domains/database/database.plugin";
 import { AIPlugin } from "./domains/ai/ai.plugin";
+import type { AIProvider } from "./domains/ai/types";
 import { OpenAIProvider } from "./domains/ai/providers/openai";
+import { ToAPIsProvider } from "./domains/ai/providers/toapis";
 import { AgentPlugin } from "./domains/agent/agent.plugin";
 import { ServerPlugin } from "./domains/server/server.plugin";
 import { SandboxPlugin } from "./domains/sandbox/sandbox.plugin";
@@ -13,6 +15,7 @@ import { KernelPlugin } from "./domains/kernel/kernel.plugin";
 import { DevicePlugin } from "./domains/device/device.plugin";
 import { MemoryPlugin } from "./domains/memory/memory.plugin";
 import { VaultPlugin } from "./domains/vault/vault.plugin";
+import { ToAPIsPlugin } from "./domains/toapis/toapis.plugin";
 import { ObservabilityPlugin } from "./domains/observability/observability.plugin";
 import { CompositorPlugin } from "./domains/ui/compositor.plugin";
 import { randomBytes } from "crypto";
@@ -58,7 +61,10 @@ export async function bootstrapStandaloneKairo() {
     });
     
     // Check if separate embedding configuration is provided
-    const providers = [openai];
+    const providers: AIProvider[] = [openai];
+    if (process.env.TOAPIS_API_KEY) {
+      providers.push(new ToAPIsProvider());
+    }
     const embeddingBaseUrl = process.env.OPENAI_EMBEDDING_BASE_URL;
     const embeddingApiKey = process.env.OPENAI_EMBEDDING_API_KEY || process.env.OPENAI_API_KEY; // Fallback to main key if not specific
 
@@ -73,7 +79,11 @@ export async function bootstrapStandaloneKairo() {
         console.log("[AI] Configured separate embedding provider: openai-embedding");
     }
 
-    await app.use(new AIPlugin(providers));
+    await app.use(new AIPlugin(providers, process.env.KAIRO_AI_DEFAULT_PROVIDER));
+
+    if (process.env.TOAPIS_API_KEY) {
+      await app.use(new ToAPIsPlugin());
+    }
 
     // Setup Memory (Markdown-based, no AI dependency for basic ops)
     await app.use(new MemoryPlugin());

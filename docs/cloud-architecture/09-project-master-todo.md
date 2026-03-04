@@ -39,10 +39,10 @@
 
 ## 6. ToAPIs 工具链与长任务回投
 
-- [ ] 完成 ToAPIs Provider 接入与模型映射
-- [ ] 完成图像、视频、语音工具的统一执行接口
-- [ ] 完成长任务状态回投协议（task.started/updated/completed/failed）
-- [ ] 完成外部执行体到事件中心的回调签名与可信来源校验
+- [x] 完成 ToAPIs Provider 接入与模型映射（文档：https://docs.toapis.com/docs/cn）
+- [x] 完成图像、视频、语音工具的统一执行接口
+- [x] 完成长任务状态回投协议（task.started/updated/completed/failed）
+- [x] 完成外部执行体到事件中心的回调签名与可信来源校验
 
 ## 7. 产物管理与可观测性
 

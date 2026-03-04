@@ -17,7 +17,8 @@
     "src/kairo/domains/events/**/*.ts",
     "src/kairo/domains/memory/**/*.ts",
     "src/kairo/domains/vault/**/*.ts",
-    "src/kairo/domains/mcp/**/*.ts"
+    "src/kairo/domains/mcp/**/*.ts",
+    "src/kairo/domains/toapis/**/*.ts"
   ],
   "exclude": [
     "node_modules",
@@ -34,4 +35,3 @@
     "src/kairo/index.ts"
   ]
 }
-
