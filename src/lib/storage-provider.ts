@@ -2,6 +2,12 @@ import fs from "fs/promises"
 import { existsSync } from "fs"
 import path from "path"
 import { pathToFileURL } from "url"
+import { del, head, list as listBlob, put } from "@vercel/blob"
+
+const IS_SERVERLESS_RUNTIME = process.env.VERCEL === "1" || Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME)
+const DEFAULT_LOCAL_OBJECT_STORAGE_PATH = IS_SERVERLESS_RUNTIME
+  ? path.join("/tmp", "kairo", "data", "object-storage")
+  : path.join(process.cwd(), "data", "object-storage")
 
 export type StoragePutInput = {
   key: string
@@ -45,7 +51,7 @@ export class LocalFsStorageProvider implements StorageProvider {
   private readonly basePath: string
 
   constructor(basePath?: string) {
-    this.basePath = basePath || process.env.KAIRO_LOCAL_OBJECT_STORAGE_PATH || path.join(process.cwd(), "data", "object-storage")
+    this.basePath = basePath || process.env.KAIRO_LOCAL_OBJECT_STORAGE_PATH || DEFAULT_LOCAL_OBJECT_STORAGE_PATH
   }
 
   private resolveKey(key: string) {
@@ -113,3 +119,73 @@ export class LocalFsStorageProvider implements StorageProvider {
   }
 }
 
+export class VercelBlobStorageProvider implements StorageProvider {
+  private readonly token: string
+
+  constructor(token?: string) {
+    const resolved = token?.trim() || process.env.BLOB_READ_WRITE_TOKEN?.trim()
+    if (!resolved) {
+      throw new Error("BLOB_READ_WRITE_TOKEN 未配置")
+    }
+    this.token = resolved
+  }
+
+  async put(input: StoragePutInput) {
+    const clean = normalizeKey(input.key)
+    const data = typeof input.body === "string" ? Buffer.from(input.body, "utf-8") : Buffer.from(input.body)
+    await put(clean, data, {
+      token: this.token,
+      access: "public",
+      addRandomSuffix: false,
+      contentType: input.contentType,
+    })
+    return { key: clean, size: data.byteLength }
+  }
+
+  async get(key: string): Promise<StorageGetResult> {
+    const clean = normalizeKey(key)
+    const object = await head(clean, { token: this.token }).catch(() => null)
+    if (!object) {
+      throw new Error("对象不存在")
+    }
+    const response = await fetch(object.url)
+    if (!response.ok) {
+      throw new Error("对象读取失败")
+    }
+    const body = new Uint8Array(await response.arrayBuffer())
+    return { key: clean, body, contentType: object.contentType }
+  }
+
+  async delete(key: string) {
+    const clean = normalizeKey(key)
+    try {
+      await del(clean, { token: this.token })
+      return { key: clean, deleted: true }
+    } catch {
+      return { key: clean, deleted: false }
+    }
+  }
+
+  async list(prefix: string) {
+    const cleanPrefix = normalizeKey(prefix)
+    const listed = await listBlob({ prefix: cleanPrefix, token: this.token, limit: 1000 })
+    const keys = listed.blobs.map((item) => item.pathname).sort()
+    return { keys }
+  }
+
+  async getUrl(key: string) {
+    const clean = normalizeKey(key)
+    const object = await head(clean, { token: this.token }).catch(() => null)
+    if (!object) {
+      throw new Error("对象不存在")
+    }
+    return { key: clean, url: object.url }
+  }
+}
+
+export function createStorageProvider(): StorageProvider {
+  if (process.env.BLOB_READ_WRITE_TOKEN?.trim()) {
+    return new VercelBlobStorageProvider()
+  }
+  return new LocalFsStorageProvider()
+}

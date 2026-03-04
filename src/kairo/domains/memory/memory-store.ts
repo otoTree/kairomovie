@@ -5,6 +5,22 @@ import fs from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
 
+const IS_SERVERLESS_RUNTIME = process.env.VERCEL === "1" || Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
+const DEFAULT_SERVERLESS_MEMORY_PATH = path.join("/tmp", "kairo", "data", "memory");
+
+export function resolveMemoryBasePath(storagePath?: string) {
+  if (storagePath) {
+    return storagePath;
+  }
+  if (process.env.KAIRO_MEMORY_PATH) {
+    return process.env.KAIRO_MEMORY_PATH;
+  }
+  if (IS_SERVERLESS_RUNTIME) {
+    return DEFAULT_SERVERLESS_MEMORY_PATH;
+  }
+  return path.join(process.cwd(), "data", "memory");
+}
+
 // 层级 → 文件名映射
 const LAYER_FILES: Record<MemoryLayer, string> = {
   [MemoryLayer.Working]: "working.md",
@@ -35,7 +51,7 @@ export class MemoryStore implements LongTermMemory {
   private ai?: AIPlugin;
 
   constructor(storagePath?: string, ai?: AIPlugin) {
-    this.basePath = storagePath || path.join(process.cwd(), "data", "memory");
+    this.basePath = resolveMemoryBasePath(storagePath);
     this.ai = ai;
   }
 

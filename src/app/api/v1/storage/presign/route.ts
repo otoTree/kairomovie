@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server"
 import { z } from "zod"
 import { and, eq } from "drizzle-orm"
+import { head } from "@vercel/blob"
 import { db } from "@/db"
 import { projects } from "@/db/schema"
 import { getAuthUserFromAuthorizationHeader } from "@/lib/api-auth"
 import { createApiAlert, recordApiLog } from "@/lib/api-observability"
 import { getAppEnv } from "@/lib/env"
 import { getProjectObjectKey, getUserObjectKey } from "@/lib/storage-keys"
-import { presignS3Url } from "@/lib/s3-presign"
 
 export const runtime = "nodejs"
 
@@ -31,15 +31,6 @@ async function assertProjectAccess(userId: string, projectId: string) {
   }
 }
 
-function buildBaseUrl(endpoint: string) {
-  const trimmed = endpoint.trim()
-  if (!trimmed) {
-    throw new Error("TOS_ENDPOINT 未配置")
-  }
-  const withScheme = trimmed.startsWith("http://") || trimmed.startsWith("https://") ? trimmed : `https://${trimmed}`
-  return new URL(withScheme)
-}
-
 export async function POST(request: Request) {
   const user = await getAuthUserFromAuthorizationHeader(request.headers.get("authorization"))
   if (!user) {
@@ -60,7 +51,7 @@ export async function POST(request: Request) {
   }
 
   const env = getAppEnv()
-  if (!env.tosEndpoint || !env.tosBucket || !env.tosAccessKey || !env.tosSecretKey || !env.tosRegion) {
+  if (!env.blobReadWriteToken) {
     await recordApiLog({
       userId: user.id,
       projectId: parsed.data.projectId ?? null,
@@ -94,23 +85,20 @@ export async function POST(request: Request) {
         ? getProjectObjectKey(input.projectId!, input.path)
         : getUserObjectKey(user.id, input.path)
 
-    const baseUrl = buildBaseUrl(env.tosEndpoint)
-    const objectUrl = new URL(`${baseUrl.origin}/${env.tosBucket}/${key}`)
-
-    const result = presignS3Url({
-      method: input.op === "put" ? "PUT" : "GET",
-      url: objectUrl,
-      accessKeyId: env.tosAccessKey,
-      secretAccessKey: env.tosSecretKey,
-      region: env.tosRegion,
-      expiresInSeconds: input.expiresInSeconds ?? 900,
-      contentType: input.contentType,
-    })
+    if (input.op === "put") {
+      return NextResponse.json({ message: "请改用 /api/v1/storage/artifacts/upload 上传文件" }, { status: 400 })
+    }
+    const object = await head(key, { token: env.blobReadWriteToken }).catch(() => null)
+    if (!object) {
+      throw new Error("对象不存在")
+    }
 
     return NextResponse.json({
       scope: input.scope,
       key,
-      ...result,
+      url: object.url,
+      method: "GET",
+      headers: {},
     })
   } catch (error) {
     await recordApiLog({

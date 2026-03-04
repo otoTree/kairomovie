@@ -15,6 +15,7 @@ type AppEnv = {
   toapisApiKey?: string
   toapisBaseUrl: string
   toapisModelName: string
+  blobReadWriteToken?: string
   tosEndpoint?: string
   tosBucket?: string
   tosAccessKey?: string
@@ -92,6 +93,7 @@ export function getAppEnv(): AppEnv {
     toapisApiKey: getOptionalEnv("TOAPIS_API_KEY"),
     toapisBaseUrl: process.env.TOAPIS_BASE_URL?.trim() || "https://toapis.com/v1",
     toapisModelName: process.env.TOAPIS_MODEL_NAME?.trim() || "gpt-5",
+    blobReadWriteToken: getOptionalEnv("BLOB_READ_WRITE_TOKEN"),
     tosEndpoint: getOptionalEnv("TOS_ENDPOINT"),
     tosBucket: getOptionalEnv("TOS_BUCKET"),
     tosAccessKey: getOptionalEnv("TOS_ACCESS_KEY"),

@@ -341,22 +341,10 @@ export default function AssetsPage() {
           },
           token
         )
-        const uploadDirectly = async () => {
-          const response = await fetch(created.upload.url, {
-            method: "PUT",
-            headers: created.upload.headers,
-            body: file,
-          })
-          if (!response.ok) {
-            throw new Error(`上传失败(${response.status})：${file.name}`)
-          }
-        }
         const uploadViaRelay = async () => {
           const formData = new FormData()
           formData.set("projectId", projectId)
           formData.set("artifactId", created.artifact.id)
-          formData.set("uploadUrl", created.upload.url)
-          formData.set("uploadHeaders", JSON.stringify(created.upload.headers ?? {}))
           formData.set("file", file, file.name)
           const response = await fetch("/api/v1/storage/artifacts/upload", {
             method: "POST",
@@ -371,11 +359,7 @@ export default function AssetsPage() {
             throw new Error(`${message}：${file.name}`)
           }
         }
-        try {
-          await uploadDirectly()
-        } catch {
-          await uploadViaRelay()
-        }
+        await uploadViaRelay()
         await requestJson(
           "/api/v1/storage/artifacts",
           {

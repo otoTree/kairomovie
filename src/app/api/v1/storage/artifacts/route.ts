@@ -7,7 +7,6 @@ import { apiArtifactFolders, apiArtifacts, projects } from "@/db/schema"
 import { getAuthUserFromAuthorizationHeader } from "@/lib/api-auth"
 import { createApiAlert, recordApiLog } from "@/lib/api-observability"
 import { getAppEnv } from "@/lib/env"
-import { presignS3Url } from "@/lib/s3-presign"
 import { getProjectArtifactKey } from "@/lib/storage-keys"
 
 export const runtime = "nodejs"
@@ -57,20 +56,6 @@ function parseBoolean(value: string | null, fallback: boolean) {
   if (normalized === "1" || normalized === "true" || normalized === "yes") return true
   if (normalized === "0" || normalized === "false" || normalized === "no") return false
   return fallback
-}
-
-function buildBaseUrl(endpoint: string) {
-  const trimmed = endpoint.trim()
-  if (!trimmed) {
-    throw new Error("TOS_ENDPOINT 未配置")
-  }
-  const withScheme = trimmed.startsWith("http://") || trimmed.startsWith("https://") ? trimmed : `https://${trimmed}`
-  return new URL(withScheme)
-}
-
-function createObjectUrl(endpoint: string, bucket: string, key: string) {
-  const baseUrl = buildBaseUrl(endpoint)
-  return new URL(`${baseUrl.origin}/${bucket}/${key}`)
 }
 
 function resolveRelativePath(objectKey: string, projectId: string, taskId: string) {
@@ -141,7 +126,7 @@ export async function POST(request: Request) {
   }
 
   const env = getAppEnv()
-  if (!env.tosEndpoint || !env.tosBucket || !env.tosAccessKey || !env.tosSecretKey || !env.tosRegion) {
+  if (!env.blobReadWriteToken) {
     await recordApiLog({
       userId: user.id,
       projectId: parsed.data.projectId,
@@ -222,34 +207,17 @@ export async function POST(request: Request) {
         updatedAt: apiArtifacts.updatedAt,
       })
 
-    const objectUrl = createObjectUrl(env.tosEndpoint, env.tosBucket, objectKey)
-    const expiresInSeconds = input.expiresInSeconds ?? 900
-    const upload = presignS3Url({
-      method: "PUT",
-      url: objectUrl,
-      accessKeyId: env.tosAccessKey,
-      secretAccessKey: env.tosSecretKey,
-      region: env.tosRegion,
-      expiresInSeconds,
-      contentType: input.mimeType,
-    })
-    const download = presignS3Url({
-      method: "GET",
-      url: objectUrl,
-      accessKeyId: env.tosAccessKey,
-      secretAccessKey: env.tosSecretKey,
-      region: env.tosRegion,
-      expiresInSeconds,
-    })
-
     return NextResponse.json({
       artifact: {
         ...saved,
         createdAt: saved.createdAt.toISOString(),
         updatedAt: saved.updatedAt.toISOString(),
       },
-      upload,
-      download,
+      upload: {
+        url: "/api/v1/storage/artifacts/upload",
+        headers: {},
+      },
+      download: null,
     })
   } catch (error) {
     await recordApiLog({
@@ -284,7 +252,6 @@ export async function GET(request: Request) {
   const taskId = searchParams.get("taskId")?.trim() || undefined
   const limit = parsePositiveInt(searchParams.get("limit"), 50)
   const withUrl = parseBoolean(searchParams.get("withUrl"), true)
-  const expiresInSeconds = parsePositiveInt(searchParams.get("expiresInSeconds"), 900)
   if (!projectId) {
     return NextResponse.json({ message: "projectId 不能为空" }, { status: 400 })
   }
@@ -318,22 +285,10 @@ export async function GET(request: Request) {
     .orderBy(desc(apiArtifacts.createdAt))
     .limit(Math.min(limit, 200))
 
-  const env = getAppEnv()
-  const canPresign = withUrl && env.tosEndpoint && env.tosBucket && env.tosAccessKey && env.tosSecretKey && env.tosRegion
-
   const items = rows.map((row) => {
-    let download: ReturnType<typeof presignS3Url> | null = null
-    if (canPresign) {
-      const objectUrl = createObjectUrl(env.tosEndpoint!, env.tosBucket!, row.objectKey)
-      download = presignS3Url({
-        method: "GET",
-        url: objectUrl,
-        accessKeyId: env.tosAccessKey!,
-        secretAccessKey: env.tosSecretKey!,
-        region: env.tosRegion!,
-        expiresInSeconds: Math.min(Math.max(expiresInSeconds, 60), 3600),
-      })
-    }
+    const metadata = row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata) ? row.metadata : {}
+    const blobUrl = typeof (metadata as Record<string, unknown>).blobUrl === "string" ? (metadata as Record<string, unknown>).blobUrl : null
+    const download = withUrl && blobUrl ? { url: blobUrl } : null
     return {
       ...row,
       relativePath: resolveRelativePath(row.objectKey, row.projectId, row.taskId),

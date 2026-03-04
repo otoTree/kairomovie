@@ -2,11 +2,10 @@ import type { Plugin } from "../../core/plugin";
 import type { Application } from "../../core/app";
 import type { AIPlugin } from "../ai/ai.plugin";
 import type { AgentPlugin } from "../agent/agent.plugin";
-import { MemoryStore } from "./memory-store";
+import { MemoryStore, resolveMemoryBasePath } from "./memory-store";
 import { MemoryLayer } from "./types";
 import { registerMemoryFsTools } from "./memory-fs-tools";
 import { LocalMemoryFsClient } from "./local-memory-fs-client";
-import path from "path";
 
 export class MemoryPlugin implements Plugin {
   readonly name = "memory";
@@ -21,7 +20,7 @@ export class MemoryPlugin implements Plugin {
 
   async setup(app: Application) {
     this.app = app;
-    const finalPath = this.storagePath || path.join(process.cwd(), "data", "memory");
+    const finalPath = resolveMemoryBasePath(this.storagePath);
 
     // AIPlugin 可选，用于 consolidate
     let ai: AIPlugin | undefined;

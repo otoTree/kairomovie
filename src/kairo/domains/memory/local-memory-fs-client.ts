@@ -4,7 +4,10 @@ import { existsSync } from "fs";
 import path from "path";
 import type { MemoryFileInfo, MemoryFileVersionInfo, MemoryFsClient, MemoryReadResult, MemorySearchHit, MemoryWriteResult } from "./memory-fs-tools";
 
-const DEFAULT_BASE_PATH = path.join(process.cwd(), "data", "memory-fs");
+const IS_SERVERLESS_RUNTIME = process.env.VERCEL === "1" || Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
+const DEFAULT_BASE_PATH = IS_SERVERLESS_RUNTIME
+  ? path.join("/tmp", "kairo", "data", "memory-fs")
+  : path.join(process.cwd(), "data", "memory-fs");
 const INDEX_FILE_NAME = ".kairo-memory-index.json";
 const VERSIONS_DIR_NAME = ".kairo-memory-versions";
 

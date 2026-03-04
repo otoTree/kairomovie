@@ -546,12 +546,20 @@ export default function WorkspacePage() {
           },
           token
         )
-        const uploaded = await fetch(created.upload.url, {
-          method: "PUT",
-          headers: created.upload.headers,
-          body: file,
+        const formData = new FormData()
+        formData.set("projectId", projectId)
+        formData.set("artifactId", created.artifact.id)
+        formData.set("file", file, file.name)
+        const uploaded = await fetch("/api/v1/storage/artifacts/upload", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+          },
+          body: formData,
         })
         if (!uploaded.ok) {
+          const payload = await uploaded.json().catch(() => null)
+          const message = payload?.message ? String(payload.message) : "上传失败"
           await requestJson(
             "/api/v1/storage/artifacts",
             {
@@ -564,7 +572,7 @@ export default function WorkspacePage() {
             },
             token
           )
-          throw new Error(`上传失败(${uploaded.status})：${file.name}`)
+          throw new Error(`${message}：${file.name}`)
         }
         await requestJson(
           "/api/v1/storage/artifacts",

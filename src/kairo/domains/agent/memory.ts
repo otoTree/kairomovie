@@ -2,6 +2,8 @@ import { promises as fs } from "fs";
 import * as path from "path";
 import type { AIPlugin } from "../ai/ai.plugin";
 
+const IS_SERVERLESS_RUNTIME = process.env.VERCEL === "1" || Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
+
 export interface LongTermMemory {
   recall(query: string): Promise<string[]>;
   memorize(content: string): Promise<void>;
@@ -28,7 +30,8 @@ export class InMemoryAgentMemory implements AgentMemory {
 
   constructor(limit: number = 50, private longTermMemory?: LongTermMemory) {
     this.limit = limit;
-    this.storageDir = path.join(process.cwd(), "memory");
+    this.storageDir = process.env.KAIRO_AGENT_MEMORY_PATH
+      || (IS_SERVERLESS_RUNTIME ? path.join("/tmp", "kairo", "memory") : path.join(process.cwd(), "memory"));
     this.initStorage();
   }
 
