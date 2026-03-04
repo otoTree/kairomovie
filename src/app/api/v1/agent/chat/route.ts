@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto"
 import { NextResponse } from "next/server"
 import { z } from "zod"
 import { getAuthUserFromAuthorizationHeader } from "@/lib/api-auth"
@@ -13,6 +14,9 @@ const chatSchema = z.object({
   timeoutMs: z.number().int().min(1000).max(120000).optional(),
   waitForResult: z.boolean().optional(),
   memoryWindow: z.number().int().min(1).max(100).optional(),
+  correlationId: z.string().min(1).max(128).optional(),
+  traceId: z.string().min(1).max(128).optional(),
+  spanId: z.string().min(1).max(128).optional(),
 })
 
 export async function POST(request: Request) {
@@ -32,6 +36,9 @@ export async function POST(request: Request) {
   const prompt = parsed.data.prompt.trim()
   const waitForResult = parsed.data.waitForResult === true
   const memoryWindow = parsed.data.memoryWindow ?? 20
+  const correlationId = parsed.data.correlationId || randomUUID()
+  const traceId = parsed.data.traceId || correlationId
+  const contextSpanId = parsed.data.spanId || randomUUID()
   const memories = await listRecentSessionMemory(user.id, sessionId, memoryWindow)
 
   const contextEventPayload = {
@@ -48,6 +55,9 @@ export async function POST(request: Request) {
     type: "kairo.session.context",
     source: `api:user:${user.id}`,
     data: contextEventPayload,
+    correlationId,
+    traceId,
+    spanId: contextSpanId,
   })
 
   await appendSessionMemoryEvent(
@@ -59,9 +69,15 @@ export async function POST(request: Request) {
       eventType: "kairo.session.context",
       metadata: {
         contextEventId: contextEvent.eventId,
+        traceId,
+        spanId: contextSpanId,
       },
     },
-    contextEvent.correlationId
+    {
+      correlationId: contextEvent.correlationId,
+      traceId,
+      spanId: contextSpanId,
+    }
   )
 
   await appendSessionMemory(user.id, sessionId, {
@@ -71,8 +87,10 @@ export async function POST(request: Request) {
     metadata: {
       targetAgentId: parsed.data.targetAgentId,
       contextCorrelationId: contextEvent.correlationId,
+        traceId,
     },
   })
+
 
   await appendSessionMemoryEvent(
     user.id,
@@ -84,9 +102,15 @@ export async function POST(request: Request) {
       metadata: {
         targetAgentId: parsed.data.targetAgentId,
         contextCorrelationId: contextEvent.correlationId,
+        traceId,
       },
     },
-    contextEvent.correlationId
+    {
+      correlationId: contextEvent.correlationId,
+      causationId: contextEvent.eventId,
+      traceId,
+      spanId: randomUUID(),
+    }
   )
 
   if (!waitForResult) {
@@ -95,6 +119,9 @@ export async function POST(request: Request) {
       targetAgentId: parsed.data.targetAgentId,
       userId: user.id,
       correlationId: contextEvent.correlationId,
+      causationId: contextEvent.eventId,
+      traceId,
+      spanId: randomUUID(),
     })
     return NextResponse.json({
       status: "accepted",
@@ -102,6 +129,8 @@ export async function POST(request: Request) {
       sessionId,
       contextEventId: contextEvent.eventId,
       correlationId: accepted.correlationId,
+      traceId: accepted.traceId,
+      spanId: accepted.spanId,
       eventId: accepted.eventId,
     })
   }
@@ -112,6 +141,9 @@ export async function POST(request: Request) {
     timeoutMs: parsed.data.timeoutMs,
     userId: user.id,
     correlationId: contextEvent.correlationId,
+    causationId: contextEvent.eventId,
+    traceId,
+    spanId: randomUUID(),
   })
 
   for (const message of result.messages) {
@@ -121,6 +153,7 @@ export async function POST(request: Request) {
       eventType: "kairo.agent.action",
       metadata: {
         correlationId: result.correlationId,
+        traceId: result.traceId,
       },
     })
     await appendSessionMemoryEvent(
@@ -132,9 +165,15 @@ export async function POST(request: Request) {
         eventType: "kairo.agent.action",
         metadata: {
           correlationId: result.correlationId,
+          traceId: result.traceId,
         },
       },
-      result.correlationId
+      {
+        correlationId: result.correlationId,
+        causationId: result.triggerEventId,
+        traceId: result.traceId,
+        spanId: randomUUID(),
+      }
     )
   }
 
@@ -144,6 +183,8 @@ export async function POST(request: Request) {
     sessionId,
     contextEventId: contextEvent.eventId,
     correlationId: result.correlationId,
+    traceId: result.traceId,
+    spanId: result.spanId,
     triggerEventId: result.triggerEventId,
     messages: result.messages,
     thoughts: result.thoughts,

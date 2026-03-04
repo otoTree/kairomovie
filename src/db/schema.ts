@@ -88,6 +88,57 @@ export const apiSessionEvents = pgTable(
   ]
 );
 
+export const apiLogs = pgTable(
+  'api_logs',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    level: text('level').notNull(),
+    category: text('category').notNull(),
+    message: text('message').notNull(),
+    code: text('code'),
+    details: jsonb('details').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    correlationId: text('correlation_id'),
+    traceId: text('trace_id'),
+    spanId: text('span_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('idx_api_logs_user_time').on(table.userId, table.createdAt),
+    index('idx_api_logs_project_time').on(table.projectId, table.createdAt),
+    index('idx_api_logs_level_time').on(table.level, table.createdAt),
+    index('idx_api_logs_trace').on(table.traceId),
+    index('idx_api_logs_correlation').on(table.correlationId),
+  ]
+);
+
+export const apiAlerts = pgTable(
+  'api_alerts',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    alertType: text('alert_type').notNull(),
+    severity: text('severity').notNull(),
+    message: text('message').notNull(),
+    status: text('status').notNull().default('open'),
+    fingerprint: text('fingerprint').notNull(),
+    details: jsonb('details').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    correlationId: text('correlation_id'),
+    traceId: text('trace_id'),
+    spanId: text('span_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('uniq_api_alerts_fingerprint').on(table.fingerprint),
+    index('idx_api_alerts_status_time').on(table.status, table.createdAt),
+    index('idx_api_alerts_project_time').on(table.projectId, table.createdAt),
+    index('idx_api_alerts_trace').on(table.traceId),
+  ]
+);
+
 export const memoryFiles = pgTable(
   'memory_files',
   {
@@ -110,6 +161,36 @@ export const memoryFiles = pgTable(
     uniqueIndex('uniq_memory_files_owner_path').on(table.ownerKey, table.path),
     index('idx_memory_files_owner_updated').on(table.ownerKey, table.updatedAt),
     index('idx_memory_files_project').on(table.projectId),
+  ]
+);
+
+export const apiArtifacts = pgTable(
+  'api_artifacts',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    taskId: text('task_id').notNull(),
+    provider: text('provider'),
+    kind: text('kind'),
+    objectKey: text('object_key').notNull(),
+    fileName: text('file_name').notNull(),
+    mimeType: text('mime_type'),
+    size: integer('size').notNull().default(0),
+    status: text('status').notNull().default('pending'),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('uniq_api_artifacts_project_task_key').on(table.projectId, table.taskId, table.objectKey),
+    index('idx_api_artifacts_user_time').on(table.userId, table.createdAt),
+    index('idx_api_artifacts_project_time').on(table.projectId, table.createdAt),
+    index('idx_api_artifacts_project_task').on(table.projectId, table.taskId),
   ]
 );
 

@@ -44,9 +44,17 @@ export async function appendSessionMemoryEvent(
   userId: string,
   sessionId: string,
   item: SessionMemoryItem,
-  correlationId?: string
+  context?: {
+    correlationId?: string
+    causationId?: string | null
+    traceId?: string | null
+    spanId?: string | null
+  }
 ) {
   const finalType = item.eventType || "kairo.session.event"
+  const correlationId = context?.correlationId || randomUUID()
+  const traceId = context?.traceId || correlationId
+  const spanId = context?.spanId || randomUUID()
   const created = await db
     .insert(apiEvents)
     .values({
@@ -60,13 +68,18 @@ export async function appendSessionMemoryEvent(
         content: item.content,
         metadata: item.metadata ?? {},
       },
-      correlationId: correlationId || randomUUID(),
-      causationId: null,
-      traceId: null,
-      spanId: null,
+      correlationId,
+      causationId: context?.causationId || null,
+      traceId,
+      spanId,
       idempotencyKey: null,
     })
-    .returning({ eventId: apiEvents.id, correlationId: apiEvents.correlationId })
+    .returning({
+      eventId: apiEvents.id,
+      correlationId: apiEvents.correlationId,
+      traceId: apiEvents.traceId,
+      spanId: apiEvents.spanId,
+    })
   return created[0]!
 }
 

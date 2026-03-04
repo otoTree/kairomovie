@@ -69,14 +69,16 @@ export function buildStandardEvent(input: {
 }): StandardEvent {
   const type = assertValidEventType(input.type)
   const source = normalizeSource(input.source)
+  const correlationId = normalizeOptionalId(input.correlationId) ?? randomUUID()
+  const traceId = normalizeOptionalId(input.traceId) ?? correlationId
   return {
     type,
     source,
     data: input.data,
-    correlationId: normalizeOptionalId(input.correlationId) ?? randomUUID(),
+    correlationId,
     causationId: normalizeOptionalId(input.causationId),
-    traceId: normalizeOptionalId(input.traceId),
-    spanId: normalizeOptionalId(input.spanId),
+    traceId,
+    spanId: normalizeOptionalId(input.spanId) ?? randomUUID(),
     idempotencyKey: normalizeIdempotencyKey(input.idempotencyKey),
   }
 }

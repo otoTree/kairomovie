@@ -5,6 +5,7 @@ import { db } from "@/db"
 import { apiEvents, projects } from "@/db/schema"
 import { getAuthUserFromAuthorizationHeader } from "@/lib/api-auth"
 import { getAppEnv } from "@/lib/env"
+import { createApiAlert, recordApiLog } from "@/lib/api-observability"
 import { apiError, apiOk } from "@/lib/api-response"
 import { buildStandardEvent, stableStringify } from "@/lib/event-spec"
 
@@ -74,10 +75,24 @@ export async function POST(request: Request) {
 
   const rawBody = await request.text().catch(() => null)
   if (!rawBody) {
+    await recordApiLog({
+      userId: user.id,
+      level: "warn",
+      category: "events.publish",
+      code: "invalid_request",
+      message: "事件发布请求体为空",
+    })
     return apiError("请求参数无效", "invalid_request", 400)
   }
 
   if (!verifyWebhookSignature(request.headers, rawBody)) {
+    await recordApiLog({
+      userId: user.id,
+      level: "warn",
+      category: "events.publish",
+      code: "signature_invalid",
+      message: "事件发布签名校验失败",
+    })
     return apiError("签名校验失败", "signature_invalid", 401)
   }
 
@@ -90,6 +105,14 @@ export async function POST(request: Request) {
   })()
   const parsed = publishSchema.safeParse(body)
   if (!parsed.success) {
+    await recordApiLog({
+      userId: user.id,
+      level: "warn",
+      category: "events.publish",
+      code: "invalid_request",
+      message: "事件发布参数校验失败",
+      details: { issues: parsed.error.issues as unknown as Record<string, unknown> },
+    })
     return apiError("请求参数无效", "invalid_request", 400)
   }
 
@@ -101,6 +124,14 @@ export async function POST(request: Request) {
       .where(and(eq(projects.id, projectId), eq(projects.userId, user.id)))
       .limit(1)
     if (!project) {
+      await recordApiLog({
+        userId: user.id,
+        projectId,
+        level: "warn",
+        category: "events.publish",
+        code: "not_found",
+        message: "事件发布项目不存在或无权限",
+      })
       return apiError("项目不存在或无权限", "not_found", 404)
     }
   }
@@ -118,6 +149,15 @@ export async function POST(request: Request) {
       idempotencyKey: parsed.data.idempotencyKey ?? null,
     })
   } catch (error) {
+    await recordApiLog({
+      userId: user.id,
+      projectId: projectId ?? null,
+      level: "warn",
+      category: "events.publish",
+      code: "invalid_request",
+      message: "事件标准化失败",
+      details: { error: error instanceof Error ? error.message : String(error) },
+    })
     return apiError(error instanceof Error ? error.message : "请求参数无效", "invalid_request", 400)
   }
 
@@ -166,6 +206,17 @@ export async function POST(request: Request) {
     .limit(1)
 
   if (!existing) {
+    await recordApiLog({
+      userId: user.id,
+      projectId: projectId ?? null,
+      level: "error",
+      category: "events.publish",
+      code: "internal_error",
+      message: "事件写入失败且无法定位既有记录",
+      correlationId: standardEvent.correlationId,
+      traceId: standardEvent.traceId ?? null,
+      spanId: standardEvent.spanId ?? null,
+    })
     return apiError("事件写入失败", "internal_error", 500)
   }
 
@@ -176,6 +227,31 @@ export async function POST(request: Request) {
     stableStringify(existing.data) === stableStringify(values.data)
 
   if (!matches) {
+    await recordApiLog({
+      userId: user.id,
+      projectId: projectId ?? null,
+      level: "warn",
+      category: "events.publish",
+      code: "conflict",
+      message: "事件幂等键冲突",
+      correlationId: standardEvent.correlationId,
+      traceId: standardEvent.traceId ?? null,
+      spanId: standardEvent.spanId ?? null,
+    })
+    await createApiAlert({
+      userId: user.id,
+      projectId: projectId ?? null,
+      alertType: "duplicate_event",
+      severity: "warning",
+      message: "检测到重复事件幂等键冲突",
+      correlationId: standardEvent.correlationId,
+      traceId: standardEvent.traceId ?? null,
+      spanId: standardEvent.spanId ?? null,
+      details: {
+        route: "/api/v1/events/publish",
+        idempotencyKey: standardEvent.idempotencyKey ?? null,
+      },
+    })
     return apiError("幂等键冲突", "conflict", 409)
   }
 

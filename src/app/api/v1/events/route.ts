@@ -18,6 +18,11 @@ function parsePositiveInt(value: string | null, fallback: number) {
   return Math.floor(parsed)
 }
 
+function parseOptionalId(value: string | null) {
+  const trimmed = value?.trim()
+  return trimmed && trimmed.length > 0 ? trimmed : undefined
+}
+
 export async function GET(request: Request) {
   const user = await getAuthUserFromAuthorizationHeader(request.headers.get("authorization"))
   if (!user) {
@@ -26,6 +31,8 @@ export async function GET(request: Request) {
 
   const { searchParams } = new URL(request.url)
   const correlationId = searchParams.get("correlationId") || undefined
+  const traceId = parseOptionalId(searchParams.get("traceId"))
+  const spanId = parseOptionalId(searchParams.get("spanId"))
   const projectId = searchParams.get("projectId") || undefined
   const fromTime = parsePositiveInt(searchParams.get("fromTime"), 0)
   const toTime = parsePositiveInt(searchParams.get("toTime"), Date.now())
@@ -49,6 +56,12 @@ export async function GET(request: Request) {
   ]
   if (correlationId) {
     where.push(eq(apiEvents.correlationId, correlationId))
+  }
+  if (traceId) {
+    where.push(eq(apiEvents.traceId, traceId))
+  }
+  if (spanId) {
+    where.push(eq(apiEvents.spanId, spanId))
   }
   if (projectId) {
     where.push(eq(apiEvents.projectId, projectId))

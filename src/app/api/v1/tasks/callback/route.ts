@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm"
 import { z } from "zod"
 import { db } from "@/db"
 import { apiEvents, projects } from "@/db/schema"
+import { createApiAlert, recordApiLog } from "@/lib/api-observability"
 import { getAppEnv } from "@/lib/env"
 import { apiError, apiOk } from "@/lib/api-response"
 import { buildStandardEvent, stableStringify } from "@/lib/event-spec"
@@ -90,10 +91,22 @@ export async function POST(request: Request) {
   }
 
   if (!verifyCallbackSignature(request.headers, rawBody)) {
+    await createApiAlert({
+      alertType: "callback_failed",
+      severity: "critical",
+      message: "任务回调签名校验失败",
+      details: { route: "/api/v1/tasks/callback" },
+    })
     return apiError("签名校验失败", "signature_invalid", 401)
   }
 
   if (!verifyCallbackSource(request.headers)) {
+    await createApiAlert({
+      alertType: "callback_failed",
+      severity: "critical",
+      message: "任务回调来源不受信任",
+      details: { route: "/api/v1/tasks/callback" },
+    })
     return apiError("来源不受信任", "forbidden", 401)
   }
 
@@ -106,6 +119,13 @@ export async function POST(request: Request) {
   })()
   const parsed = schema.safeParse(body)
   if (!parsed.success) {
+    await recordApiLog({
+      level: "warn",
+      category: "tasks.callback",
+      code: "invalid_request",
+      message: "任务回调参数校验失败",
+      details: { route: "/api/v1/tasks/callback" },
+    })
     return apiError("请求参数无效", "invalid_request", 400)
   }
 
@@ -116,6 +136,18 @@ export async function POST(request: Request) {
     .where(eq(projects.id, projectId))
     .limit(1)
   if (!project) {
+    await createApiAlert({
+      alertType: "callback_failed",
+      severity: "warning",
+      message: "任务回调项目不存在",
+      details: {
+        route: "/api/v1/tasks/callback",
+        projectId: parsed.data.projectId,
+      },
+      correlationId: parsed.data.correlationId ?? parsed.data.taskId,
+      traceId: parsed.data.traceId ?? null,
+      spanId: parsed.data.spanId ?? null,
+    })
     return apiError("项目不存在", "not_found", 404)
   }
 
@@ -146,6 +178,18 @@ export async function POST(request: Request) {
       idempotencyKey: parsed.data.idempotencyKey,
     })
   } catch (error) {
+    await recordApiLog({
+      userId: project.userId,
+      projectId: project.id,
+      level: "warn",
+      category: "tasks.callback",
+      code: "invalid_request",
+      message: "任务回调事件标准化失败",
+      correlationId: parsed.data.correlationId ?? parsed.data.taskId,
+      traceId: parsed.data.traceId ?? null,
+      spanId: parsed.data.spanId ?? null,
+      details: { error: error instanceof Error ? error.message : String(error) },
+    })
     return apiError(error instanceof Error ? error.message : "请求参数无效", "invalid_request", 400)
   }
 
@@ -190,6 +234,29 @@ export async function POST(request: Request) {
     .limit(1)
 
   if (!existing) {
+    await recordApiLog({
+      userId: project.userId,
+      projectId: project.id,
+      level: "error",
+      category: "tasks.callback",
+      code: "internal_error",
+      message: "任务回调事件写入失败",
+      correlationId: standardEvent.correlationId,
+      traceId: standardEvent.traceId ?? null,
+      spanId: standardEvent.spanId ?? null,
+      details: { route: "/api/v1/tasks/callback" },
+    })
+    await createApiAlert({
+      userId: project.userId,
+      projectId: project.id,
+      alertType: "callback_failed",
+      severity: "critical",
+      message: "任务回调写入事件失败",
+      correlationId: standardEvent.correlationId,
+      traceId: standardEvent.traceId ?? null,
+      spanId: standardEvent.spanId ?? null,
+      details: { route: "/api/v1/tasks/callback" },
+    })
     return apiError("事件写入失败", "internal_error", 500)
   }
 
@@ -200,6 +267,29 @@ export async function POST(request: Request) {
     stableStringify(existing.data) === stableStringify(values.data)
 
   if (!matches) {
+    await recordApiLog({
+      userId: project.userId,
+      projectId: project.id,
+      level: "warn",
+      category: "tasks.callback",
+      code: "conflict",
+      message: "任务回调幂等键冲突",
+      correlationId: standardEvent.correlationId,
+      traceId: standardEvent.traceId ?? null,
+      spanId: standardEvent.spanId ?? null,
+      details: { route: "/api/v1/tasks/callback", idempotencyKey: standardEvent.idempotencyKey ?? null },
+    })
+    await createApiAlert({
+      userId: project.userId,
+      projectId: project.id,
+      alertType: "duplicate_event",
+      severity: "warning",
+      message: "任务回调出现幂等键冲突",
+      correlationId: standardEvent.correlationId,
+      traceId: standardEvent.traceId ?? null,
+      spanId: standardEvent.spanId ?? null,
+      details: { route: "/api/v1/tasks/callback", idempotencyKey: standardEvent.idempotencyKey ?? null },
+    })
     return apiError("幂等键冲突", "conflict", 409)
   }
 

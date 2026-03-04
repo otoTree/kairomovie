@@ -18,6 +18,9 @@ export type ChatInput = {
   userId: string
   timeoutMs?: number
   correlationId?: string
+  causationId?: string
+  traceId?: string
+  spanId?: string
 }
 
 export type SendUserMessageInput = {
@@ -25,6 +28,9 @@ export type SendUserMessageInput = {
   targetAgentId?: string
   userId: string
   correlationId?: string
+  causationId?: string
+  traceId?: string
+  spanId?: string
 }
 
 export type PublishEventInput = {
@@ -39,6 +45,8 @@ export type PublishEventInput = {
 
 export type ChatOutput = {
   correlationId: string
+  traceId: string
+  spanId: string
   triggerEventId: string
   thoughts: string[]
   messages: string[]
@@ -109,6 +117,8 @@ export class NextKairoRuntime {
   async sendUserMessage(input: SendUserMessageInput) {
     await this.start()
     const correlationId = input.correlationId || randomUUID()
+    const traceId = input.traceId || correlationId
+    const spanId = input.spanId || randomUUID()
     const eventId = await this.agent.globalBus.publish({
       type: "kairo.user.message",
       source: `api:user:${input.userId}`,
@@ -117,8 +127,11 @@ export class NextKairoRuntime {
         targetAgentId: input.targetAgentId,
       },
       correlationId,
+      causationId: input.causationId,
+      traceId,
+      spanId,
     })
-    return { eventId, correlationId }
+    return { eventId, correlationId, traceId, spanId }
   }
 
   async publishEvent(input: PublishEventInput) {
@@ -159,11 +172,14 @@ export class NextKairoRuntime {
       rejectDone = reject
     })
 
-    const { eventId: triggerEventId, correlationId } = await this.sendUserMessage({
+    const { eventId: triggerEventId, correlationId, traceId, spanId } = await this.sendUserMessage({
       prompt: input.prompt,
       targetAgentId: input.targetAgentId,
       userId: input.userId,
       correlationId: input.correlationId,
+      causationId: input.causationId,
+      traceId: input.traceId,
+      spanId: input.spanId,
     })
 
     const unsubscribe = this.agent.globalBus.subscribe("kairo.>", (event) => {
@@ -196,6 +212,8 @@ export class NextKairoRuntime {
       await done
       return {
         correlationId,
+        traceId,
+        spanId,
         triggerEventId,
         thoughts,
         messages,

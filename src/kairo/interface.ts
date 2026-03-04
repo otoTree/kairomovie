@@ -9,7 +9,7 @@ import {
 
 export type KairoInterface = {
   publishEvent: (input: PublishEventInput) => Promise<{ eventId: string; correlationId: string }>
-  sendUserMessage: (input: SendUserMessageInput) => Promise<{ eventId: string; correlationId: string }>
+  sendUserMessage: (input: SendUserMessageInput) => Promise<{ eventId: string; correlationId: string; traceId: string; spanId: string }>
   queryEvents: (filter: EventFilter, correlationId?: string) => Promise<KairoEvent[]>
   invokeAgent: (input: ChatInput) => Promise<ChatOutput>
 }

@@ -4,6 +4,7 @@ import { and, eq } from "drizzle-orm"
 import { db } from "@/db"
 import { projects } from "@/db/schema"
 import { getAuthUserFromAuthorizationHeader } from "@/lib/api-auth"
+import { createApiAlert, recordApiLog } from "@/lib/api-observability"
 import { getAppEnv } from "@/lib/env"
 import { getProjectObjectKey, getUserObjectKey } from "@/lib/storage-keys"
 import { presignS3Url } from "@/lib/s3-presign"
@@ -48,43 +49,87 @@ export async function POST(request: Request) {
   const body = await request.json().catch(() => null)
   const parsed = schema.safeParse(body)
   if (!parsed.success) {
+    await recordApiLog({
+      userId: user.id,
+      level: "warn",
+      category: "storage.presign",
+      code: "invalid_request",
+      message: "存储预签名参数无效",
+    })
     return NextResponse.json({ message: "请求参数无效" }, { status: 400 })
   }
 
   const env = getAppEnv()
   if (!env.tosEndpoint || !env.tosBucket || !env.tosAccessKey || !env.tosSecretKey || !env.tosRegion) {
+    await recordApiLog({
+      userId: user.id,
+      projectId: parsed.data.projectId ?? null,
+      level: "error",
+      category: "storage.presign",
+      code: "storage_unconfigured",
+      message: "对象存储未配置导致预签名失败",
+    })
+    await createApiAlert({
+      userId: user.id,
+      projectId: parsed.data.projectId ?? null,
+      alertType: "storage_failed",
+      severity: "critical",
+      message: "对象存储未配置，无法生成预签名 URL",
+      details: { route: "/api/v1/storage/presign" },
+    })
     return NextResponse.json({ message: "对象存储未配置" }, { status: 400 })
   }
 
-  const input = parsed.data
-  if (input.scope === "project") {
-    if (!input.projectId) {
-      return NextResponse.json({ message: "projectId 不能为空" }, { status: 400 })
+  try {
+    const input = parsed.data
+    if (input.scope === "project") {
+      if (!input.projectId) {
+        return NextResponse.json({ message: "projectId 不能为空" }, { status: 400 })
+      }
+      await assertProjectAccess(user.id, input.projectId)
     }
-    await assertProjectAccess(user.id, input.projectId)
+
+    const key =
+      input.scope === "project"
+        ? getProjectObjectKey(input.projectId!, input.path)
+        : getUserObjectKey(user.id, input.path)
+
+    const baseUrl = buildBaseUrl(env.tosEndpoint)
+    const objectUrl = new URL(`${baseUrl.origin}/${env.tosBucket}/${key}`)
+
+    const result = presignS3Url({
+      method: input.op === "put" ? "PUT" : "GET",
+      url: objectUrl,
+      accessKeyId: env.tosAccessKey,
+      secretAccessKey: env.tosSecretKey,
+      region: env.tosRegion,
+      expiresInSeconds: input.expiresInSeconds ?? 900,
+      contentType: input.contentType,
+    })
+
+    return NextResponse.json({
+      scope: input.scope,
+      key,
+      ...result,
+    })
+  } catch (error) {
+    await recordApiLog({
+      userId: user.id,
+      projectId: parsed.data.projectId ?? null,
+      level: "error",
+      category: "storage.presign",
+      code: "storage_failed",
+      message: "生成预签名 URL 失败",
+      details: { error: error instanceof Error ? error.message : String(error) },
+    })
+    await createApiAlert({
+      userId: user.id,
+      projectId: parsed.data.projectId ?? null,
+      alertType: "storage_failed",
+      severity: "critical",
+      message: "生成预签名 URL 失败",
+      details: { route: "/api/v1/storage/presign", error: error instanceof Error ? error.message : String(error) },
+    })
+    return NextResponse.json({ message: error instanceof Error ? error.message : "操作失败" }, { status: 400 })
   }
-
-  const key =
-    input.scope === "project"
-      ? getProjectObjectKey(input.projectId!, input.path)
-      : getUserObjectKey(user.id, input.path)
-
-  const baseUrl = buildBaseUrl(env.tosEndpoint)
-  const objectUrl = new URL(`${baseUrl.origin}/${env.tosBucket}/${key}`)
-
-  const result = presignS3Url({
-    method: input.op === "put" ? "PUT" : "GET",
-    url: objectUrl,
-    accessKeyId: env.tosAccessKey,
-    secretAccessKey: env.tosSecretKey,
-    region: env.tosRegion,
-    expiresInSeconds: input.expiresInSeconds ?? 900,
-    contentType: input.contentType,
-  })
-
-  return NextResponse.json({
-    scope: input.scope,
-    key,
-    ...result,
-  })
 }
