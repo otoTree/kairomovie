@@ -4,7 +4,6 @@ import Link from "next/link"
 import { Settings2 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { ReactNode } from "react"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -40,13 +39,11 @@ export function AppShell({ user, title, subtitle, children }: AppShellProps) {
               <h1 className="text-2xl font-semibold">{title}</h1>
               <p className="mt-1 text-sm text-black/60">{subtitle}</p>
             </div>
-            <div className="flex items-center gap-2">
-              {user ? <Badge variant="outline">{user.email}</Badge> : null}
+            <div className="flex items-center">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button size="sm" variant="outline" className="cursor-pointer">
+                  <Button size="icon" variant="outline" className="cursor-pointer" title="设置">
                     <Settings2 />
-                    设置
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">

@@ -32,6 +32,43 @@ export class OpenAIProvider implements AIProvider {
     if (options.defaultEmbeddingModel !== undefined) this.defaultEmbeddingModel = options.defaultEmbeddingModel;
   }
 
+  private isRetryableNetworkError(error: unknown): boolean {
+    if (!(error instanceof Error)) {
+      return false;
+    }
+    const cause = error.cause;
+    const causeCode =
+      typeof cause === "object" && cause !== null && "code" in cause
+        ? String((cause as { code?: unknown }).code || "")
+        : "";
+    const causeMessage = cause instanceof Error ? cause.message : "";
+    const full = `${error.message} ${causeCode} ${causeMessage}`.toUpperCase();
+    return ["FETCH FAILED", "ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ECONNREFUSED"].some(token => full.includes(token));
+  }
+
+  private async postWithRetry(url: string, body: Record<string, unknown>, maxAttempts = 2): Promise<Response> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify(body),
+        });
+      } catch (error) {
+        lastError = error;
+        if (!this.isRetryableNetworkError(error) || attempt >= maxAttempts) {
+          throw error;
+        }
+        await new Promise(resolve => setTimeout(resolve, 300 * attempt));
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("Request failed");
+  }
+
   async embed(text: string, options?: AIEmbeddingOptions): Promise<AIEmbeddingResponse> {
     if (!this.apiKey || this.apiKey.trim().length == 0) {
       throw new Error("OPENAI_API_KEY missing");
@@ -41,22 +78,15 @@ export class OpenAIProvider implements AIProvider {
     try {
         const url = `${this.baseUrl.replace(/\/$/, "")}/embeddings`;
 
-        const response = await fetch(url, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${this.apiKey}`,
-            },
-            body: JSON.stringify({
-                model,
-                input: text,
-                dimensions: options?.dimensions,
-            }),
+        const response = await this.postWithRetry(url, {
+            model,
+            input: text,
+            dimensions: options?.dimensions,
         });
 
         if (!response.ok) {
             const errorText = await response.text();
-            throw new Error(`OpenAI API error (${response.status}): ${errorText}`);
+            throw new Error(`[${this.name}] API error (${response.status}) ${url}: ${errorText}`);
         }
 
         const data = await response.json() as {
@@ -80,7 +110,7 @@ export class OpenAIProvider implements AIProvider {
             usage
         };
     } catch (error) {
-        console.error("[OpenAI] Embedding error:", error);
+        console.error(`[AI:${this.name}] Embedding error:`, error);
         throw error;
     }
   }
@@ -96,24 +126,17 @@ export class OpenAIProvider implements AIProvider {
       // But usually baseUrl is provided as "https://api.openai.com/v1"
       const url = `${this.baseUrl.replace(/\/$/, "")}/chat/completions`;
 
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${this.apiKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          messages,
-          stream: false, // Explicitly disable stream as current interface doesn't support it
-          temperature: options?.temperature,
-          max_tokens: options?.maxTokens,
-        }),
+      const response = await this.postWithRetry(url, {
+        model,
+        messages,
+        stream: false,
+        temperature: options?.temperature,
+        max_tokens: options?.maxTokens,
       });
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`OpenAI API error (${response.status}): ${errorText}`);
+        throw new Error(`[${this.name}] API error (${response.status}) ${url}: ${errorText}`);
       }
 
       const data = await response.json() as {
@@ -144,7 +167,7 @@ export class OpenAIProvider implements AIProvider {
         usage
       };
     } catch (error) {
-      console.error("[OpenAI] Chat error:", error);
+      console.error(`[AI:${this.name}] Chat error:`, error);
       throw error;
     }
   }

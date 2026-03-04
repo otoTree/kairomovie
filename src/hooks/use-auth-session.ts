@@ -1,12 +1,21 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useState } from "react"
 import { AuthUser, clearAuth, loadAuth } from "@/lib/client-auth"
 
 export function useAuthSession() {
-  const initial = useMemo(() => loadAuth(), [])
-  const [token, setToken] = useState(initial.token)
-  const [user, setUser] = useState<AuthUser | null>(initial.user)
+  const [ready, setReady] = useState(false)
+  const [token, setToken] = useState("")
+  const [user, setUser] = useState<AuthUser | null>(null)
+
+  useEffect(() => {
+    const initial = loadAuth()
+    Promise.resolve().then(() => {
+      setToken(initial.token)
+      setUser(initial.user)
+      setReady(true)
+    })
+  }, [])
 
   function logout() {
     clearAuth()
@@ -15,7 +24,7 @@ export function useAuthSession() {
   }
 
   return {
-    ready: true,
+    ready,
     token,
     user,
     setToken,

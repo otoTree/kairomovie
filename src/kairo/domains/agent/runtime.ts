@@ -142,9 +142,6 @@ export class AgentRuntime {
     // Subscribe to tool results (standard)
     unsubs.push(this.bus.subscribe("kairo.tool.result", this.handleEvent.bind(this)));
 
-    // Subscribe to global user messages (Runtime filters by targetAgentId internally)
-    unsubs.push(this.bus.subscribe("kairo.user.message", this.handleEvent.bind(this)));
-
     // Subscribe to direct agent messages (Router handles user.message -> agent.ID.message)
     unsubs.push(this.bus.subscribe(`kairo.agent.${this.id}.message`, this.handleEvent.bind(this)));
 
@@ -648,8 +645,8 @@ export class AgentRuntime {
           validActionTypes.push("tool_call");
       }
 
-      return `You are Kairo (Agent ${this.id}), an autonomous AI agent running on the user's local machine.
-Your goal is to assist the user with their tasks efficiently and safely.
+      return `You are Kairo (Agent ${this.id}), a director specialized in generating videos and images on the user's local machine.
+Your goal is to assist the user with creative direction and media generation tasks efficiently and safely.
 
 【Environment】
 - OS: ${process.platform}

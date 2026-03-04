@@ -140,4 +140,30 @@ describe("AgentRuntime (Event Driven)", () => {
     
     runtime.stop();
   });
+
+  it("should ignore global user message and only process direct routed message", async () => {
+    runtime.start();
+
+    await bus.publish({
+      type: "kairo.user.message",
+      source: "api:user:test",
+      data: { content: "Global hello" }
+    });
+
+    await bus.publish({
+      type: `kairo.agent.${runtime.id}.message`,
+      source: "orchestrator",
+      data: { content: "Direct hello" }
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 80));
+
+    expect(mockChat).toHaveBeenCalledTimes(1);
+    const calls = mockChat.mock.calls as unknown as any[][];
+    const prompt = calls[0]![0] as any[];
+    const userMessage = prompt.find((p: any) => p.role === "user").content;
+    expect(userMessage).toContain("User: Direct hello");
+
+    runtime.stop();
+  });
 });

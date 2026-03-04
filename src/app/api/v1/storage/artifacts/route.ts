@@ -3,7 +3,7 @@ import { and, desc, eq } from "drizzle-orm"
 import { z } from "zod"
 import { db } from "@/db"
 import { ensureCloudTables } from "@/db/ensure-cloud-tables"
-import { apiArtifacts, projects } from "@/db/schema"
+import { apiArtifactFolders, apiArtifacts, projects } from "@/db/schema"
 import { getAuthUserFromAuthorizationHeader } from "@/lib/api-auth"
 import { createApiAlert, recordApiLog } from "@/lib/api-observability"
 import { getAppEnv } from "@/lib/env"
@@ -23,6 +23,8 @@ const createSchema = z.object({
   size: z.number().int().min(0).max(10_000_000_000).optional(),
   status: z.enum(["pending", "uploaded", "failed"]).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  folderSource: z.enum(["manual", "canvas", "system"]).optional(),
+  linkedCanvasName: z.string().min(1).max(128).optional(),
   expiresInSeconds: z.number().int().min(60).max(3600).optional(),
 })
 
@@ -90,6 +92,35 @@ async function assertProjectAccess(userId: string, projectId: string) {
   }
 }
 
+async function upsertArtifactFolder(input: {
+  userId: string
+  projectId: string
+  name: string
+  source?: "manual" | "canvas" | "system"
+  linkedCanvasName?: string
+}) {
+  const now = new Date()
+  await db
+    .insert(apiArtifactFolders)
+    .values({
+      userId: input.userId,
+      projectId: input.projectId,
+      name: input.name,
+      source: input.source ?? "manual",
+      linkedCanvasName: input.linkedCanvasName ?? null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: [apiArtifactFolders.projectId, apiArtifactFolders.name],
+      set: {
+        source: input.source ?? "manual",
+        linkedCanvasName: input.linkedCanvasName ?? null,
+        updatedAt: now,
+      },
+    })
+}
+
 export async function POST(request: Request) {
   const user = await getAuthUserFromAuthorizationHeader(request.headers.get("authorization"))
   if (!user) {
@@ -135,6 +166,13 @@ export async function POST(request: Request) {
   try {
     const input = parsed.data
     await assertProjectAccess(user.id, input.projectId)
+    await upsertArtifactFolder({
+      userId: user.id,
+      projectId: input.projectId,
+      name: input.taskId,
+      source: input.folderSource,
+      linkedCanvasName: input.linkedCanvasName,
+    })
 
     const objectKey = getProjectArtifactKey(input.projectId, input.taskId, input.relativePath ?? input.fileName)
     const now = new Date()
@@ -354,6 +392,11 @@ export async function PATCH(request: Request) {
     parsed.data.relativePath ?? resolveRelativePath(current.objectKey, current.projectId, current.taskId) ?? current.fileName
   const nextFileName = parsed.data.fileName ?? current.fileName
   const now = new Date()
+  await upsertArtifactFolder({
+    userId: user.id,
+    projectId: parsed.data.projectId,
+    name: nextTaskId,
+  })
   const nextObjectKey = getProjectArtifactKey(parsed.data.projectId, nextTaskId, nextRelativePath)
 
   const [updated] = await db

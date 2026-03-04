@@ -194,6 +194,29 @@ export const apiArtifacts = pgTable(
   ]
 );
 
+export const apiArtifactFolders = pgTable(
+  'api_artifact_folders',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    source: text('source').notNull().default('manual'),
+    linkedCanvasName: text('linked_canvas_name'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('uniq_api_artifact_folders_project_name').on(table.projectId, table.name),
+    index('idx_api_artifact_folders_user_time').on(table.userId, table.updatedAt),
+    index('idx_api_artifact_folders_project_time').on(table.projectId, table.updatedAt),
+  ]
+);
+
 export const asyncTasks = pgTable(
   'async_tasks',
   {

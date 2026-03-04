@@ -262,6 +262,68 @@ export class AgentPlugin implements Plugin {
     return taskId;
   }
 
+  private extractFirstJsonObject(text: string): string | undefined {
+    const start = text.indexOf("{");
+    if (start < 0) return undefined;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < text.length; i++) {
+      const char = text[i];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === "\"") {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+      if (char === "{") depth++;
+      if (char === "}") {
+        depth--;
+        if (depth === 0) {
+          return text.slice(start, i + 1);
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private parseRoutingRelevance(raw: string): boolean {
+    const cleaned = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
+    const jsonCandidate = this.extractFirstJsonObject(cleaned);
+    if (jsonCandidate) {
+      try {
+        const parsed = JSON.parse(jsonCandidate) as { relevant?: unknown };
+        if (typeof parsed.relevant === "boolean") {
+          return parsed.relevant;
+        }
+      } catch {}
+    }
+    const relevantMatch = cleaned.match(/"relevant"\s*:\s*(true|false)/i) ?? cleaned.match(/\brelevant\s*[:=]\s*(true|false)\b/i);
+    if (relevantMatch) {
+      return relevantMatch[1].toLowerCase() === "true";
+    }
+    throw new Error("Unable to parse routing relevance");
+  }
+
+  private async publishRoutedMessage(event: KairoEvent, agentId: string, content: string) {
+    await this.globalBus.publish({
+      type: `kairo.agent.${agentId}.message`,
+      source: "orchestrator",
+      data: { content },
+      correlationId: event.correlationId,
+      causationId: event.id,
+      traceId: event.traceId,
+      spanId: event.spanId,
+    });
+  }
+
   private async handleUserMessage(event: KairoEvent) {
         const content = (event.data as any).content;
         const target = (event.data as any).targetAgentId;
@@ -271,11 +333,7 @@ export class AgentPlugin implements Plugin {
                  // Auto-spawn if targeted explicitly?
                  this.spawnAgent(target);
             }
-            await this.globalBus.publish({
-                type: `kairo.agent.${target}.message`,
-                source: "orchestrator",
-                data: { content }
-            });
+            await this.publishRoutedMessage(event, target, content);
             return;
         }
         
@@ -307,37 +365,24 @@ Reply JSON: { "relevant": boolean }`;
             // Safe parse
             let relevant = true;
             try {
-                const json = JSON.parse(response.content.replace(/```json/g, "").replace(/```/g, "").trim());
-                relevant = json.relevant;
+                relevant = this.parseRoutingRelevance(response.content);
             } catch (e) {
                 console.warn("[Orchestrator] Failed to parse routing decision, defaulting to relevant.", e);
             }
 
             if (relevant) {
-                 await this.globalBus.publish({
-                    type: `kairo.agent.default.message`,
-                    source: "orchestrator",
-                    data: { content }
-                });
+                 await this.publishRoutedMessage(event, "default", content);
             } else {
                 const newId = crypto.randomUUID();
                 console.log(`[Orchestrator] Spawning new agent ${newId} for unrelated task.`);
                 this.spawnAgent(newId);
-                await this.globalBus.publish({
-                    type: `kairo.agent.${newId}.message`,
-                    source: "orchestrator",
-                    data: { content }
-                });
+                await this.publishRoutedMessage(event, newId, content);
             }
 
         } catch (e) {
             console.error("[Orchestrator] Routing error:", e);
              // Fallback
-             await this.globalBus.publish({
-                type: `kairo.agent.default.message`,
-                source: "orchestrator",
-                data: { content }
-            });
+             await this.publishRoutedMessage(event, "default", content);
         }
   }
 }
