@@ -26,6 +26,16 @@ const createSchema = z.object({
   expiresInSeconds: z.number().int().min(60).max(3600).optional(),
 })
 
+const updateSchema = z.object({
+  id: z.string().min(1).max(128),
+  projectId: z.string().min(1).max(128),
+  taskId: z.string().min(1).max(128).optional(),
+  relativePath: z.string().min(1).max(1024).optional(),
+  fileName: z.string().min(1).max(255).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+  status: z.enum(["pending", "uploaded", "failed"]).optional(),
+})
+
 function parsePositiveInt(value: string | null, fallback: number) {
   if (!value) {
     return fallback
@@ -59,6 +69,14 @@ function buildBaseUrl(endpoint: string) {
 function createObjectUrl(endpoint: string, bucket: string, key: string) {
   const baseUrl = buildBaseUrl(endpoint)
   return new URL(`${baseUrl.origin}/${bucket}/${key}`)
+}
+
+function resolveRelativePath(objectKey: string, projectId: string, taskId: string) {
+  const prefix = `projects/${projectId}/artifacts/${taskId}/`
+  if (!objectKey.startsWith(prefix)) {
+    return objectKey
+  }
+  return objectKey.slice(prefix.length)
 }
 
 async function assertProjectAccess(userId: string, projectId: string) {
@@ -280,6 +298,7 @@ export async function GET(request: Request) {
     }
     return {
       ...row,
+      relativePath: resolveRelativePath(row.objectKey, row.projectId, row.taskId),
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
       download,
@@ -290,4 +309,112 @@ export async function GET(request: Request) {
     items,
     count: items.length,
   })
+}
+
+export async function PATCH(request: Request) {
+  const user = await getAuthUserFromAuthorizationHeader(request.headers.get("authorization"))
+  if (!user) {
+    return NextResponse.json({ message: "未授权" }, { status: 401 })
+  }
+
+  const body = await request.json().catch(() => null)
+  const parsed = updateSchema.safeParse(body)
+  if (!parsed.success) {
+    return NextResponse.json({ message: "请求参数无效" }, { status: 400 })
+  }
+
+  await ensureCloudTables()
+  await assertProjectAccess(user.id, parsed.data.projectId)
+
+  const [current] = await db
+    .select({
+      id: apiArtifacts.id,
+      projectId: apiArtifacts.projectId,
+      taskId: apiArtifacts.taskId,
+      objectKey: apiArtifacts.objectKey,
+      fileName: apiArtifacts.fileName,
+      metadata: apiArtifacts.metadata,
+      status: apiArtifacts.status,
+      mimeType: apiArtifacts.mimeType,
+      size: apiArtifacts.size,
+      provider: apiArtifacts.provider,
+      kind: apiArtifacts.kind,
+      createdAt: apiArtifacts.createdAt,
+    })
+    .from(apiArtifacts)
+    .where(and(eq(apiArtifacts.id, parsed.data.id), eq(apiArtifacts.userId, user.id), eq(apiArtifacts.projectId, parsed.data.projectId)))
+    .limit(1)
+
+  if (!current) {
+    return NextResponse.json({ message: "资产不存在" }, { status: 404 })
+  }
+
+  const nextTaskId = parsed.data.taskId ?? current.taskId
+  const nextRelativePath =
+    parsed.data.relativePath ?? resolveRelativePath(current.objectKey, current.projectId, current.taskId) ?? current.fileName
+  const nextFileName = parsed.data.fileName ?? current.fileName
+  const now = new Date()
+  const nextObjectKey = getProjectArtifactKey(parsed.data.projectId, nextTaskId, nextRelativePath)
+
+  const [updated] = await db
+    .update(apiArtifacts)
+    .set({
+      taskId: nextTaskId,
+      objectKey: nextObjectKey,
+      fileName: nextFileName,
+      metadata: parsed.data.metadata ?? current.metadata,
+      status: parsed.data.status ?? current.status,
+      updatedAt: now,
+    })
+    .where(and(eq(apiArtifacts.id, current.id), eq(apiArtifacts.userId, user.id), eq(apiArtifacts.projectId, parsed.data.projectId)))
+    .returning({
+      id: apiArtifacts.id,
+      projectId: apiArtifacts.projectId,
+      taskId: apiArtifacts.taskId,
+      provider: apiArtifacts.provider,
+      kind: apiArtifacts.kind,
+      objectKey: apiArtifacts.objectKey,
+      fileName: apiArtifacts.fileName,
+      mimeType: apiArtifacts.mimeType,
+      size: apiArtifacts.size,
+      status: apiArtifacts.status,
+      metadata: apiArtifacts.metadata,
+      createdAt: apiArtifacts.createdAt,
+      updatedAt: apiArtifacts.updatedAt,
+    })
+
+  return NextResponse.json({
+    ...updated,
+    relativePath: resolveRelativePath(updated.objectKey, updated.projectId, updated.taskId),
+    createdAt: updated.createdAt.toISOString(),
+    updatedAt: updated.updatedAt.toISOString(),
+  })
+}
+
+export async function DELETE(request: Request) {
+  const user = await getAuthUserFromAuthorizationHeader(request.headers.get("authorization"))
+  if (!user) {
+    return NextResponse.json({ message: "未授权" }, { status: 401 })
+  }
+
+  const { searchParams } = new URL(request.url)
+  const projectId = searchParams.get("projectId")?.trim() || ""
+  const id = searchParams.get("id")?.trim() || ""
+  if (!projectId || !id) {
+    return NextResponse.json({ message: "projectId 和 id 不能为空" }, { status: 400 })
+  }
+
+  await ensureCloudTables()
+  await assertProjectAccess(user.id, projectId)
+
+  const deleted = await db
+    .delete(apiArtifacts)
+    .where(and(eq(apiArtifacts.id, id), eq(apiArtifacts.projectId, projectId), eq(apiArtifacts.userId, user.id)))
+    .returning({ id: apiArtifacts.id })
+
+  if (deleted.length === 0) {
+    return NextResponse.json({ message: "资产不存在" }, { status: 404 })
+  }
+
+  return NextResponse.json({ status: "deleted", id: deleted[0].id })
 }
