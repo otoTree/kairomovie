@@ -1,10 +1,12 @@
 import { createHmac, randomUUID, timingSafeEqual } from "crypto"
 import { and, eq } from "drizzle-orm"
-import { NextResponse } from "next/server"
 import { z } from "zod"
 import { db } from "@/db"
 import { apiEvents, projects } from "@/db/schema"
 import { getAuthUserFromAuthorizationHeader } from "@/lib/api-auth"
+import { getAppEnv } from "@/lib/env"
+import { apiError, apiOk } from "@/lib/api-response"
+import { buildStandardEvent, stableStringify } from "@/lib/event-spec"
 
 export const runtime = "nodejs"
 
@@ -31,7 +33,7 @@ function verifyWebhookSignature(headers: Headers, rawBody: string): boolean {
     return true
   }
 
-  const secret = process.env.KAIRO_EVENT_SIGNING_SECRET
+  const secret = getAppEnv().kairoEventSigningSecret
   if (!secret) {
     return false
   }
@@ -67,16 +69,16 @@ function verifyWebhookSignature(headers: Headers, rawBody: string): boolean {
 export async function POST(request: Request) {
   const user = await getAuthUserFromAuthorizationHeader(request.headers.get("authorization"))
   if (!user) {
-    return NextResponse.json({ message: "未授权" }, { status: 401 })
+    return apiError("未授权", "unauthorized", 401)
   }
 
   const rawBody = await request.text().catch(() => null)
   if (!rawBody) {
-    return NextResponse.json({ message: "请求参数无效" }, { status: 400 })
+    return apiError("请求参数无效", "invalid_request", 400)
   }
 
   if (!verifyWebhookSignature(request.headers, rawBody)) {
-    return NextResponse.json({ message: "签名校验失败" }, { status: 401 })
+    return apiError("签名校验失败", "signature_invalid", 401)
   }
 
   const body = (() => {
@@ -88,7 +90,7 @@ export async function POST(request: Request) {
   })()
   const parsed = publishSchema.safeParse(body)
   if (!parsed.success) {
-    return NextResponse.json({ message: "请求参数无效" }, { status: 400 })
+    return apiError("请求参数无效", "invalid_request", 400)
   }
 
   const projectId = parsed.data.projectId
@@ -99,23 +101,37 @@ export async function POST(request: Request) {
       .where(and(eq(projects.id, projectId), eq(projects.userId, user.id)))
       .limit(1)
     if (!project) {
-      return NextResponse.json({ message: "项目不存在或无权限" }, { status: 404 })
+      return apiError("项目不存在或无权限", "not_found", 404)
     }
   }
 
-  const correlationId = parsed.data.correlationId || randomUUID()
+  let standardEvent: ReturnType<typeof buildStandardEvent>
+  try {
+    standardEvent = buildStandardEvent({
+      type: parsed.data.type,
+      source: parsed.data.source || `api:user:${user.id}`,
+      data: parsed.data.data,
+      correlationId: parsed.data.correlationId || randomUUID(),
+      causationId: parsed.data.causationId ?? null,
+      traceId: parsed.data.traceId ?? null,
+      spanId: parsed.data.spanId ?? null,
+      idempotencyKey: parsed.data.idempotencyKey ?? null,
+    })
+  } catch (error) {
+    return apiError(error instanceof Error ? error.message : "请求参数无效", "invalid_request", 400)
+  }
 
   const values = {
     userId: user.id,
     projectId: projectId ?? null,
-    type: parsed.data.type,
-    source: parsed.data.source || `api:user:${user.id}`,
-    data: parsed.data.data,
-    correlationId,
-    causationId: parsed.data.causationId ?? null,
-    traceId: parsed.data.traceId ?? null,
-    spanId: parsed.data.spanId ?? null,
-    idempotencyKey: parsed.data.idempotencyKey ?? null,
+    type: standardEvent.type,
+    source: standardEvent.source,
+    data: standardEvent.data,
+    correlationId: standardEvent.correlationId,
+    causationId: standardEvent.causationId,
+    traceId: standardEvent.traceId,
+    spanId: standardEvent.spanId,
+    idempotencyKey: standardEvent.idempotencyKey,
   } as const
 
   const insert = db
@@ -124,12 +140,12 @@ export async function POST(request: Request) {
     .returning({ eventId: apiEvents.id, correlationId: apiEvents.correlationId })
 
   const created =
-    parsed.data.idempotencyKey
+    standardEvent.idempotencyKey
       ? await insert.onConflictDoNothing({ target: [apiEvents.userId, apiEvents.idempotencyKey] })
       : await insert
 
   if (created.length > 0) {
-    return NextResponse.json({
+    return apiOk({
       status: "accepted",
       eventId: created[0].eventId,
       correlationId: created[0].correlationId,
@@ -137,17 +153,35 @@ export async function POST(request: Request) {
   }
 
   const [existing] = await db
-    .select({ eventId: apiEvents.id, correlationId: apiEvents.correlationId })
+    .select({
+      eventId: apiEvents.id,
+      correlationId: apiEvents.correlationId,
+      type: apiEvents.type,
+      source: apiEvents.source,
+      data: apiEvents.data,
+      projectId: apiEvents.projectId,
+    })
     .from(apiEvents)
-    .where(and(eq(apiEvents.userId, user.id), eq(apiEvents.idempotencyKey, parsed.data.idempotencyKey!)))
+    .where(and(eq(apiEvents.userId, user.id), eq(apiEvents.idempotencyKey, standardEvent.idempotencyKey!)))
     .limit(1)
 
   if (!existing) {
-    return NextResponse.json({ message: "事件写入失败" }, { status: 500 })
+    return apiError("事件写入失败", "internal_error", 500)
   }
 
-  return NextResponse.json({
+  const matches =
+    existing.projectId === (projectId ?? null) &&
+    existing.type === values.type &&
+    existing.source === values.source &&
+    stableStringify(existing.data) === stableStringify(values.data)
+
+  if (!matches) {
+    return apiError("幂等键冲突", "conflict", 409)
+  }
+
+  return apiOk({
     status: "accepted",
+    idempotency: "replayed",
     eventId: existing.eventId,
     correlationId: existing.correlationId,
   })

@@ -4,6 +4,8 @@ import type { AIPlugin } from "../ai/ai.plugin";
 import type { AgentPlugin } from "../agent/agent.plugin";
 import { MemoryStore } from "./memory-store";
 import { MemoryLayer } from "./types";
+import { registerMemoryFsTools } from "./memory-fs-tools";
+import { LocalMemoryFsClient } from "./local-memory-fs-client";
 import path from "path";
 
 export class MemoryPlugin implements Plugin {
@@ -11,6 +13,7 @@ export class MemoryPlugin implements Plugin {
   private store?: MemoryStore;
   private app?: Application;
   private storagePath?: string;
+  private fsClient = new LocalMemoryFsClient();
 
   constructor(storagePath?: string) {
     this.storagePath = storagePath;
@@ -159,5 +162,6 @@ export class MemoryPlugin implements Plugin {
     });
 
     console.log("[Memory] Registered Memory Tools (bionic layers)");
+    registerMemoryFsTools(agent, this.fsClient);
   }
 }

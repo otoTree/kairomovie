@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { pgTable, text, timestamp, uuid, jsonb, pgEnum, primaryKey, uniqueIndex, index } from 'drizzle-orm/pg-core';
+import { integer, pgEnum, pgTable, text, timestamp, uuid, jsonb, primaryKey, uniqueIndex, index } from 'drizzle-orm/pg-core';
 
 export const taskStatusEnum = pgEnum('task_status', ['pending', 'running', 'completed', 'failed']);
 
@@ -64,6 +64,76 @@ export const apiEvents = pgTable(
     index('idx_api_events_project_time').on(table.projectId, table.createdAt),
     index('idx_api_events_type').on(table.type),
     index('idx_api_events_correlation').on(table.correlationId),
+  ]
+);
+
+export const apiSessionEvents = pgTable(
+  'api_session_events',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    sessionId: text('session_id').notNull(),
+    role: text('role').notNull(),
+    content: text('content').notNull(),
+    eventType: text('event_type'),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('idx_api_session_events_user_session_time').on(table.userId, table.sessionId, table.createdAt),
+    index('idx_api_session_events_project_session_time').on(table.projectId, table.sessionId, table.createdAt),
+  ]
+);
+
+export const memoryFiles = pgTable(
+  'memory_files',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    ownerKey: text('owner_key').notNull(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    scope: text('scope').notNull(),
+    path: text('path').notNull(),
+    etag: text('etag').notNull(),
+    version: integer('version').notNull().default(1),
+    size: integer('size').notNull().default(0),
+    tags: jsonb('tags').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('uniq_memory_files_owner_path').on(table.ownerKey, table.path),
+    index('idx_memory_files_owner_updated').on(table.ownerKey, table.updatedAt),
+    index('idx_memory_files_project').on(table.projectId),
+  ]
+);
+
+export const asyncTasks = pgTable(
+  'async_tasks',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    projectId: uuid('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    type: text('type').notNull(),
+    status: taskStatusEnum('status').default('pending').notNull(),
+    correlationId: text('correlation_id').notNull(),
+    idempotencyKey: text('idempotency_key'),
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    result: jsonb('result').$type<Record<string, unknown>>(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('uniq_async_tasks_user_idempotency').on(table.userId, table.idempotencyKey),
+    index('idx_async_tasks_user_time').on(table.userId, table.createdAt),
+    index('idx_async_tasks_correlation').on(table.correlationId),
   ]
 );
 

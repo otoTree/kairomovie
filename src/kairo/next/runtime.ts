@@ -7,6 +7,7 @@ import { MemoryPlugin } from "@/kairo/domains/memory/memory.plugin"
 import { VaultPlugin } from "@/kairo/domains/vault/vault.plugin"
 import type { KairoEvent } from "@/kairo/domains/events"
 import type { EventFilter } from "@/kairo/domains/events"
+import { getAppEnv } from "@/lib/env"
 
 export type ChatInput = {
   prompt: string
@@ -51,21 +52,22 @@ export class NextKairoRuntime {
       return
     }
 
+    const env = getAppEnv()
     const openai = new OpenAIProvider({
-      defaultModel: process.env.OPENAI_MODEL_NAME || "deepseek-chat",
-      baseUrl: process.env.OPENAI_BASE_URL || "https://api.deepseek.com/v1",
-      apiKey: process.env.OPENAI_API_KEY,
+      defaultModel: env.openaiModelName,
+      baseUrl: env.openaiBaseUrl,
+      apiKey: env.openaiApiKey,
     })
     const providers = [openai]
-    const embeddingBaseUrl = process.env.OPENAI_EMBEDDING_BASE_URL
-    const embeddingApiKey = process.env.OPENAI_EMBEDDING_API_KEY || process.env.OPENAI_API_KEY
+    const embeddingBaseUrl = env.openaiEmbeddingBaseUrl
+    const embeddingApiKey = env.openaiEmbeddingApiKey || env.openaiApiKey
     if (embeddingBaseUrl) {
       providers.push(
         new OpenAIProvider({
           name: "openai-embedding",
           baseUrl: embeddingBaseUrl,
           apiKey: embeddingApiKey,
-          defaultEmbeddingModel: process.env.OPENAI_EMBEDDING_MODEL_NAME || "text-embedding-3-small",
+          defaultEmbeddingModel: env.openaiEmbeddingModelName || "text-embedding-3-small",
         })
       )
     }

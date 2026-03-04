@@ -1,6 +1,8 @@
 import { randomUUID } from "crypto"
-import { sql } from "drizzle-orm"
+import { and, desc, eq, inArray, sql } from "drizzle-orm"
 import { db } from "@/db"
+import { apiEvents } from "@/db/schema"
+import { ensureCloudTables } from "@/db/ensure-cloud-tables"
 
 type SessionMemoryItem = {
   role: "user" | "assistant" | "system" | "event"
@@ -11,26 +13,13 @@ type SessionMemoryItem = {
 
 let ensured = false
 
+const SESSION_MEMORY_EVENT_TYPES = ["kairo.user.message", "kairo.agent.action", "kairo.session.event", "kairo.session.system"] as const
+
 async function ensureTable() {
   if (ensured) {
     return
   }
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS api_session_events (
-      id text PRIMARY KEY,
-      user_id text NOT NULL,
-      session_id text NOT NULL,
-      role text NOT NULL,
-      content text NOT NULL,
-      event_type text,
-      metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
-      created_at timestamptz NOT NULL DEFAULT now()
-    )
-  `)
-  await db.execute(sql`
-    CREATE INDEX IF NOT EXISTS idx_api_session_events_user_session_time
-    ON api_session_events(user_id, session_id, created_at)
-  `)
+  await ensureCloudTables()
   ensured = true
 }
 
@@ -51,7 +40,112 @@ export async function appendSessionMemory(userId: string, sessionId: string, ite
   `)
 }
 
+export async function appendSessionMemoryEvent(
+  userId: string,
+  sessionId: string,
+  item: SessionMemoryItem,
+  correlationId?: string
+) {
+  const finalType = item.eventType || "kairo.session.event"
+  const created = await db
+    .insert(apiEvents)
+    .values({
+      userId,
+      projectId: null,
+      type: finalType,
+      source: `api:user:${userId}`,
+      data: {
+        sessionId,
+        role: item.role,
+        content: item.content,
+        metadata: item.metadata ?? {},
+      },
+      correlationId: correlationId || randomUUID(),
+      causationId: null,
+      traceId: null,
+      spanId: null,
+      idempotencyKey: null,
+    })
+    .returning({ eventId: apiEvents.id, correlationId: apiEvents.correlationId })
+  return created[0]!
+}
+
+function extractTextFromApiEvent(type: string, data: unknown) {
+  if (typeof data !== "object" || data === null) {
+    return ""
+  }
+  const record = data as Record<string, unknown>
+  if (type === "kairo.user.message") {
+    const content = record.content ?? record.prompt
+    return typeof content === "string" ? content : ""
+  }
+  if (type === "kairo.agent.action") {
+    const action = record.action
+    if (typeof action === "object" && action !== null) {
+      const content = (action as Record<string, unknown>).content
+      if (typeof content === "string") {
+        return content
+      }
+    }
+    const content = record.content
+    return typeof content === "string" ? content : ""
+  }
+  const content = record.content
+  return typeof content === "string" ? content : ""
+}
+
+function extractRoleFromApiEvent(type: string, data: unknown): SessionMemoryItem["role"] {
+  if (type === "kairo.user.message") return "user"
+  if (type === "kairo.agent.action") return "assistant"
+  if (type === "kairo.session.system") return "system"
+  if (typeof data === "object" && data !== null) {
+    const role = (data as Record<string, unknown>).role
+    if (role === "user" || role === "assistant" || role === "system" || role === "event") {
+      return role
+    }
+  }
+  return "event"
+}
+
+async function listRecentSessionMemoryFromApiEvents(userId: string, sessionId: string, limit = 20) {
+  const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 200) : 20
+  const rows = await db
+    .select({
+      type: apiEvents.type,
+      data: apiEvents.data,
+      createdAt: apiEvents.createdAt,
+    })
+    .from(apiEvents)
+    .where(
+      and(
+        eq(apiEvents.userId, userId),
+        inArray(apiEvents.type, SESSION_MEMORY_EVENT_TYPES as unknown as string[]),
+        sql`${apiEvents.data} ->> 'sessionId' = ${sessionId}`
+      )
+    )
+    .orderBy(desc(apiEvents.createdAt))
+    .limit(safeLimit)
+
+  return rows
+    .reverse()
+    .map((row) => ({
+      role: extractRoleFromApiEvent(String(row.type), row.data),
+      content: extractTextFromApiEvent(String(row.type), row.data),
+      eventType: String(row.type),
+      metadata: (typeof row.data === "object" && row.data !== null
+        ? ((row.data as Record<string, unknown>).metadata as Record<string, unknown> | undefined)
+        : undefined) ?? {},
+      createdAt: row.createdAt ? String(row.createdAt) : "",
+    }))
+    .filter((item) => item.content.length > 0)
+}
+
 export async function listRecentSessionMemory(userId: string, sessionId: string, limit = 20) {
+  const fromEvents = await listRecentSessionMemoryFromApiEvents(userId, sessionId, limit)
+  if (fromEvents.length > 0) {
+    return fromEvents
+  }
+
   await ensureTable()
   const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 20
   const result = await db.execute(sql`

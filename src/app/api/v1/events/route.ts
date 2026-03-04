@@ -1,8 +1,9 @@
-import { NextResponse } from "next/server"
 import { and, desc, eq, gte, inArray, lte } from "drizzle-orm"
 import { db } from "@/db"
 import { apiEvents } from "@/db/schema"
 import { getAuthUserFromAuthorizationHeader } from "@/lib/api-auth"
+import { apiError, apiOk } from "@/lib/api-response"
+import { assertValidEventType, normalizeSource } from "@/lib/event-spec"
 
 export const runtime = "nodejs"
 
@@ -20,7 +21,7 @@ function parsePositiveInt(value: string | null, fallback: number) {
 export async function GET(request: Request) {
   const user = await getAuthUserFromAuthorizationHeader(request.headers.get("authorization"))
   if (!user) {
-    return NextResponse.json({ message: "未授权" }, { status: 401 })
+    return apiError("未授权", "unauthorized", 401)
   }
 
   const { searchParams } = new URL(request.url)
@@ -29,8 +30,17 @@ export async function GET(request: Request) {
   const fromTime = parsePositiveInt(searchParams.get("fromTime"), 0)
   const toTime = parsePositiveInt(searchParams.get("toTime"), Date.now())
   const limit = parsePositiveInt(searchParams.get("limit"), 100)
-  const types = searchParams.getAll("type")
-  const sources = searchParams.getAll("source")
+  const rawTypes = searchParams.getAll("type")
+  const rawSources = searchParams.getAll("source")
+
+  let types: string[] = []
+  let sources: string[] = []
+  try {
+    types = rawTypes.map(assertValidEventType)
+    sources = rawSources.map(normalizeSource)
+  } catch (error) {
+    return apiError(error instanceof Error ? error.message : "请求参数无效", "invalid_request", 400)
+  }
 
   const where = [
     eq(apiEvents.userId, user.id),
@@ -68,7 +78,7 @@ export async function GET(request: Request) {
     .orderBy(desc(apiEvents.createdAt))
     .limit(Math.min(limit, 500))
 
-  return NextResponse.json({
+  return apiOk({
     items: events,
     count: events.length,
   })

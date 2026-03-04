@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { z } from "zod"
 import { getAuthUserFromAuthorizationHeader } from "@/lib/api-auth"
 import { createKairoInterface } from "@/kairo/interface"
-import { appendSessionMemory, listRecentSessionMemory } from "@/lib/session-memory"
+import { appendSessionMemory, appendSessionMemoryEvent, listRecentSessionMemory } from "@/lib/session-memory"
 
 export const runtime = "nodejs"
 
@@ -50,6 +50,20 @@ export async function POST(request: Request) {
     data: contextEventPayload,
   })
 
+  await appendSessionMemoryEvent(
+    user.id,
+    sessionId,
+    {
+      role: "event",
+      content: JSON.stringify(contextEventPayload),
+      eventType: "kairo.session.context",
+      metadata: {
+        contextEventId: contextEvent.eventId,
+      },
+    },
+    contextEvent.correlationId
+  )
+
   await appendSessionMemory(user.id, sessionId, {
     role: "user",
     content: prompt,
@@ -59,6 +73,21 @@ export async function POST(request: Request) {
       contextCorrelationId: contextEvent.correlationId,
     },
   })
+
+  await appendSessionMemoryEvent(
+    user.id,
+    sessionId,
+    {
+      role: "user",
+      content: prompt,
+      eventType: "kairo.user.message",
+      metadata: {
+        targetAgentId: parsed.data.targetAgentId,
+        contextCorrelationId: contextEvent.correlationId,
+      },
+    },
+    contextEvent.correlationId
+  )
 
   if (!waitForResult) {
     const accepted = await kairo.sendUserMessage({
@@ -94,6 +123,19 @@ export async function POST(request: Request) {
         correlationId: result.correlationId,
       },
     })
+    await appendSessionMemoryEvent(
+      user.id,
+      sessionId,
+      {
+        role: "assistant",
+        content: message,
+        eventType: "kairo.agent.action",
+        metadata: {
+          correlationId: result.correlationId,
+        },
+      },
+      result.correlationId
+    )
   }
 
   return NextResponse.json({
