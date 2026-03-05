@@ -267,6 +267,12 @@ function createChatSessionId(canvas: string) {
   return `${safe || "canvas"}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
+function createVersionName(canvas: string) {
+  const now = new Date()
+  const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`
+  return `${toFolderName(canvas)} · ${time}`
+}
+
 function toFolderName(raw: string) {
   const normalized = raw.trim().replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ")
   return normalized || "未命名画布"
@@ -890,59 +896,49 @@ export default function WorkspacePage() {
     }
   }
 
-  async function createCanvasRecord() {
+  async function upsertCanvasRecord(options?: { silent?: boolean }) {
+    if (!token || !projectId) {
+      return null
+    }
+    const requestPath = "/api/v1/workspace/canvases"
+    const requestBody = activeCanvasId
+      ? {
+          id: activeCanvasId,
+          projectId,
+          name: toFolderName(canvasName),
+          sessionId,
+          snapshot: buildCurrentSnapshot(),
+        }
+      : {
+          projectId,
+          name: toFolderName(canvasName),
+          sessionId,
+          snapshot: buildCurrentSnapshot(),
+        }
+    const method = activeCanvasId ? "PATCH" : "POST"
+    const saved = await requestJson<CanvasItem>(
+      requestPath,
+      {
+        method,
+        body: JSON.stringify(requestBody),
+      },
+      token
+    )
+    setActiveCanvasId(saved.id)
+    await loadCanvases(token, projectId)
+    if (!options?.silent) {
+      setMessage(`已保存画布：${saved.name}`)
+    }
+    return saved
+  }
+
+  async function saveCanvasRecord() {
     if (!token || !projectId) {
       return
     }
     setCanvasSaving(true)
     try {
-      const saved = await requestJson<CanvasItem>(
-        "/api/v1/workspace/canvases",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            projectId,
-            name: toFolderName(canvasName),
-            sessionId,
-            snapshot: buildCurrentSnapshot(),
-          }),
-        },
-        token
-      )
-      setActiveCanvasId(saved.id)
-      await loadCanvases(token, projectId)
-      setMessage(`已创建画布：${saved.name}`)
-    } catch (error) {
-      setMessage(toErrorMessage(error))
-    } finally {
-      setCanvasSaving(false)
-    }
-  }
-
-  async function updateCanvasRecord() {
-    if (!token || !projectId || !activeCanvasId) {
-      await createCanvasRecord()
-      return
-    }
-    setCanvasSaving(true)
-    try {
-      const updated = await requestJson<CanvasItem>(
-        "/api/v1/workspace/canvases",
-        {
-          method: "PATCH",
-          body: JSON.stringify({
-            id: activeCanvasId,
-            projectId,
-            name: toFolderName(canvasName),
-            sessionId,
-            snapshot: buildCurrentSnapshot(),
-          }),
-        },
-        token
-      )
-      setActiveCanvasId(updated.id)
-      await loadCanvases(token, projectId)
-      setMessage(`已保存画布：${updated.name}`)
+      await upsertCanvasRecord()
     } catch (error) {
       setMessage(toErrorMessage(error))
     } finally {
@@ -978,20 +974,20 @@ export default function WorkspacePage() {
     }
   }
 
-  async function saveCanvasHistory() {
+  async function createCanvasVersion() {
     if (!token || !projectId) {
       return
     }
-    const historyName = toFolderName(canvasName)
     setHistorySaving(true)
     try {
+      await upsertCanvasRecord({ silent: true })
       const saved = await requestJson<CanvasHistoryItem>(
         "/api/v1/workspace/histories",
         {
           method: "POST",
           body: JSON.stringify({
             projectId,
-            name: historyName,
+            name: createVersionName(canvasName),
             sessionId,
             snapshot: buildCurrentSnapshot(),
           }),
@@ -1000,38 +996,7 @@ export default function WorkspacePage() {
       )
       setActiveHistoryId(saved.id)
       await loadCanvasHistories(token, projectId)
-      setMessage(`已保存历史：${saved.name}`)
-    } catch (error) {
-      setMessage(toErrorMessage(error))
-    } finally {
-      setHistorySaving(false)
-    }
-  }
-
-  async function updateCanvasHistory() {
-    if (!token || !projectId || !activeHistoryId) {
-      setMessage("请先选择一个历史记录")
-      return
-    }
-    setHistorySaving(true)
-    try {
-      const updated = await requestJson<CanvasHistoryItem>(
-        "/api/v1/workspace/histories",
-        {
-          method: "PATCH",
-          body: JSON.stringify({
-            id: activeHistoryId,
-            projectId,
-            name: toFolderName(canvasName),
-            sessionId,
-            snapshot: buildCurrentSnapshot(),
-          }),
-        },
-        token
-      )
-      setActiveHistoryId(updated.id)
-      await loadCanvasHistories(token, projectId)
-      setMessage(`已更新历史：${updated.name}`)
+      setMessage(`已创建版本：${saved.name}`)
     } catch (error) {
       setMessage(toErrorMessage(error))
     } finally {
@@ -1175,15 +1140,6 @@ export default function WorkspacePage() {
           <div className={`${isSidebarHover ? "mt-2" : "mt-0"} flex flex-col gap-2`}>
             <Button
               size={isSidebarHover ? "default" : "icon"}
-              className="cursor-pointer"
-              onClick={resetCanvas}
-              title="新建画布"
-            >
-              <Plus />
-              {isSidebarHover ? "新建画布" : null}
-            </Button>
-            <Button
-              size={isSidebarHover ? "default" : "icon"}
               variant="outline"
               className="cursor-pointer"
               onClick={() => addTextNode()}
@@ -1223,39 +1179,6 @@ export default function WorkspacePage() {
               <ZoomIn />
               {isSidebarHover ? "放大" : null}
             </Button>
-            <Button
-              size={isSidebarHover ? "default" : "icon"}
-              variant="outline"
-              className="cursor-pointer"
-              disabled={canvasSaving}
-              onClick={() => void updateCanvasRecord()}
-              title={activeCanvasId ? "保存当前画布" : "创建画布"}
-            >
-              <Save />
-              {isSidebarHover ? (canvasSaving ? "保存中..." : activeCanvasId ? "保存画布" : "创建画布") : null}
-            </Button>
-            <Button
-              size={isSidebarHover ? "default" : "icon"}
-              variant="outline"
-              className="cursor-pointer"
-              disabled={historySaving}
-              onClick={saveCanvasHistory}
-              title="保存历史"
-            >
-              <Save />
-              {isSidebarHover ? (historySaving ? "保存中..." : "保存历史") : null}
-            </Button>
-            <Button
-              size={isSidebarHover ? "default" : "icon"}
-              variant="outline"
-              className="cursor-pointer"
-              disabled={historySaving || !activeHistoryId}
-              onClick={updateCanvasHistory}
-              title="更新历史"
-            >
-              <History />
-              {isSidebarHover ? "更新历史" : null}
-            </Button>
           </div>
 
           {isSidebarHover ? (
@@ -1282,7 +1205,19 @@ export default function WorkspacePage() {
 
           {isSidebarHover ? (
             <div className="mt-3 space-y-2">
-              <p className="text-[11px] text-black/50">项目画布</p>
+              <div className="flex items-center justify-between">
+                <p className="text-[11px] text-black/50">画布</p>
+                <div className="flex gap-1">
+                  <Button size="sm" variant="outline" className="h-7 cursor-pointer px-2" onClick={resetCanvas}>
+                    <Plus />
+                    新建
+                  </Button>
+                  <Button size="sm" variant="outline" className="h-7 cursor-pointer px-2" disabled={canvasSaving} onClick={() => void saveCanvasRecord()}>
+                    <Save />
+                    {canvasSaving ? "保存中" : "保存"}
+                  </Button>
+                </div>
+              </div>
               <div className="max-h-40 space-y-2 overflow-auto rounded-md border border-black/8 p-2">
                 {canvasItems.map((item) => (
                   <div
@@ -1309,7 +1244,19 @@ export default function WorkspacePage() {
 
           {isSidebarHover ? (
             <div className="mt-3 space-y-2">
-              <p className="text-[11px] text-black/50">画布历史</p>
+              <div className="flex items-center justify-between">
+                <p className="text-[11px] text-black/50">版本历史</p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 cursor-pointer px-2"
+                  disabled={historySaving}
+                  onClick={createCanvasVersion}
+                >
+                  <History />
+                  {historySaving ? "创建中" : "创建版本"}
+                </Button>
+              </div>
               <div className="max-h-40 space-y-2 overflow-auto rounded-md border border-black/8 p-2">
                 {historyItems.map((item) => (
                   <div
