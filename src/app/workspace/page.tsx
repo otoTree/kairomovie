@@ -325,6 +325,8 @@ export default function WorkspacePage() {
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const dragStartRef = useRef<DragStartState | null>(null)
   const panStartRef = useRef<PanStartState | null>(null)
+  const activeCanvasIdRef = useRef("")
+  const activeHistoryIdRef = useRef("")
 
   const mediaAssets = useMemo(() => assets.filter((item) => item.kind === "image" || item.kind === "video"), [assets])
 
@@ -352,7 +354,7 @@ export default function WorkspacePage() {
       setHistoryItems(result.items)
       if (result.items.length === 0) {
         setActiveHistoryId("")
-      } else if (!result.items.some((item) => item.id === activeHistoryId)) {
+      } else if (!result.items.some((item) => item.id === activeHistoryIdRef.current)) {
         setActiveHistoryId("")
       }
     } catch (error) {
@@ -360,7 +362,7 @@ export default function WorkspacePage() {
     } finally {
       setHistoryLoading(false)
     }
-  }, [activeHistoryId])
+  }, [])
 
   const loadChatSessions = useCallback(
     async (authToken: string, nextProjectId: string, nextCanvasName: string) => {
@@ -433,7 +435,7 @@ export default function WorkspacePage() {
   )
 
   const loadCanvases = useCallback(
-    async (authToken: string, nextProjectId: string) => {
+    async (authToken: string, nextProjectId: string, preferredCanvasId?: string) => {
       setCanvasLoading(true)
       try {
         const result = await requestJson<CanvasListResponse>(
@@ -446,7 +448,8 @@ export default function WorkspacePage() {
           setActiveCanvasId("")
           return
         }
-        const current = result.items.find((item) => item.id === activeCanvasId) || result.items[0]
+        const targetCanvasId = preferredCanvasId || activeCanvasIdRef.current
+        const current = result.items.find((item) => item.id === targetCanvasId) || result.items[0]
         await applyCanvasSnapshot(authToken, nextProjectId, current)
       } catch (error) {
         setMessage(toErrorMessage(error))
@@ -454,8 +457,16 @@ export default function WorkspacePage() {
         setCanvasLoading(false)
       }
     },
-    [activeCanvasId, applyCanvasSnapshot]
+    [applyCanvasSnapshot]
   )
+
+  useEffect(() => {
+    activeCanvasIdRef.current = activeCanvasId
+  }, [activeCanvasId])
+
+  useEffect(() => {
+    activeHistoryIdRef.current = activeHistoryId
+  }, [activeHistoryId])
 
   useEffect(() => {
     if (!ready) {
@@ -925,7 +936,7 @@ export default function WorkspacePage() {
       token
     )
     setActiveCanvasId(saved.id)
-    await loadCanvases(token, projectId)
+    await loadCanvases(token, projectId, saved.id)
     if (!options?.silent) {
       setMessage(`已保存画布：${saved.name}`)
     }
