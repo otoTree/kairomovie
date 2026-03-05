@@ -16,6 +16,9 @@ export type ChatInput = {
   prompt: string
   targetAgentId?: string
   userId: string
+  projectId?: string
+  canvasId?: string
+  canvasName?: string
   timeoutMs?: number
   correlationId?: string
   causationId?: string
@@ -27,6 +30,9 @@ export type SendUserMessageInput = {
   prompt: string
   targetAgentId?: string
   userId: string
+  projectId?: string
+  canvasId?: string
+  canvasName?: string
   correlationId?: string
   causationId?: string
   traceId?: string
@@ -125,6 +131,10 @@ export class NextKairoRuntime {
       data: {
         content: input.prompt,
         targetAgentId: input.targetAgentId,
+        userId: input.userId,
+        projectId: input.projectId,
+        canvasId: input.canvasId,
+        canvasName: input.canvasName,
       },
       correlationId,
       causationId: input.causationId,
@@ -176,6 +186,9 @@ export class NextKairoRuntime {
       prompt: input.prompt,
       targetAgentId: input.targetAgentId,
       userId: input.userId,
+      projectId: input.projectId,
+      canvasId: input.canvasId,
+      canvasName: input.canvasName,
       correlationId: input.correlationId,
       causationId: input.causationId,
       traceId: input.traceId,

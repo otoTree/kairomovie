@@ -211,9 +211,10 @@ export class AgentPlugin implements Plugin {
         required: ["userId", "projectId", "text"],
       },
     }, async (args: any, context: any) => {
-      const { userId, projectId } = await this.resolveCanvasScope(args);
+      const toolArgs = this.mergeCanvasToolArgs(args, context);
+      const { userId, projectId } = await this.resolveCanvasScope(toolArgs);
       const text = this.requireString(args, "text");
-      const target = await this.findCanvasForTool(args, userId, projectId, args?.createIfMissing === true);
+      const target = await this.findCanvasForTool(toolArgs, userId, projectId, toolArgs?.createIfMissing === true);
       const snapshot = this.normalizeCanvasSnapshot(target.snapshot, target.name);
       const nodeId = `node-${crypto.randomUUID().slice(0, 8)}`;
       const node: WorkspaceCanvasNode = {
@@ -269,9 +270,10 @@ export class AgentPlugin implements Plugin {
         required: ["userId", "projectId", "src"],
       },
     }, async (args: any, context: any) => {
-      const { userId, projectId } = await this.resolveCanvasScope(args);
+      const toolArgs = this.mergeCanvasToolArgs(args, context);
+      const { userId, projectId } = await this.resolveCanvasScope(toolArgs);
       const src = this.requireString(args, "src");
-      const target = await this.findCanvasForTool(args, userId, projectId, args?.createIfMissing === true);
+      const target = await this.findCanvasForTool(toolArgs, userId, projectId, toolArgs?.createIfMissing === true);
       const snapshot = this.normalizeCanvasSnapshot(target.snapshot, target.name);
       const nodeId = `node-${crypto.randomUUID().slice(0, 8)}`;
       const node: WorkspaceCanvasNode = {
@@ -319,9 +321,10 @@ export class AgentPlugin implements Plugin {
         },
         required: ["userId", "projectId"],
       },
-    }, async (args: any) => {
-      const { userId, projectId } = await this.resolveCanvasScope(args);
-      const target = await this.findCanvasForTool(args, userId, projectId, false);
+    }, async (args: any, context: any) => {
+      const toolArgs = this.mergeCanvasToolArgs(args, context);
+      const { userId, projectId } = await this.resolveCanvasScope(toolArgs);
+      const target = await this.findCanvasForTool(toolArgs, userId, projectId, false);
       const snapshot = this.normalizeCanvasSnapshot(target.snapshot, target.name);
       return {
         canvasId: target.id,
@@ -677,11 +680,17 @@ export class AgentPlugin implements Plugin {
     throw new Error("Unable to parse routing relevance");
   }
 
-  private async publishRoutedMessage(event: KairoEvent, agentId: string, content: string) {
+  private async publishRoutedMessage(event: KairoEvent, agentId: string) {
+    const payload = event.data && typeof event.data === "object" && !Array.isArray(event.data)
+      ? { ...(event.data as Record<string, unknown>) }
+      : {};
+    if (typeof payload.content !== "string") {
+      payload.content = "";
+    }
     await this.globalBus.publish({
       type: `kairo.agent.${agentId}.message`,
       source: "orchestrator",
-      data: { content },
+      data: payload,
       correlationId: event.correlationId,
       causationId: event.id,
       traceId: event.traceId,
@@ -698,7 +707,7 @@ export class AgentPlugin implements Plugin {
                  // Auto-spawn if targeted explicitly?
                  this.spawnAgent(target);
             }
-            await this.publishRoutedMessage(event, target, content);
+            await this.publishRoutedMessage(event, target);
             return;
         }
         
@@ -736,18 +745,37 @@ Reply JSON: { "relevant": boolean }`;
             }
 
             if (relevant) {
-                 await this.publishRoutedMessage(event, "default", content);
+                 await this.publishRoutedMessage(event, "default");
             } else {
                 const newId = crypto.randomUUID();
                 console.log(`[Orchestrator] Spawning new agent ${newId} for unrelated task.`);
                 this.spawnAgent(newId);
-                await this.publishRoutedMessage(event, newId, content);
+                await this.publishRoutedMessage(event, newId);
             }
 
         } catch (e) {
             console.error("[Orchestrator] Routing error:", e);
              // Fallback
-             await this.publishRoutedMessage(event, "default", content);
+             await this.publishRoutedMessage(event, "default");
         }
+  }
+
+  private mergeCanvasToolArgs(args: any, context: any) {
+    const merged = args && typeof args === "object" ? { ...args } : {};
+    const copyString = (key: "userId" | "projectId" | "canvasId" | "canvasName") => {
+      const current = merged[key];
+      if (typeof current === "string" && current.trim().length > 0) {
+        return;
+      }
+      const fromContext = context?.[key];
+      if (typeof fromContext === "string" && fromContext.trim().length > 0) {
+        merged[key] = fromContext.trim();
+      }
+    };
+    copyString("userId");
+    copyString("projectId");
+    copyString("canvasId");
+    copyString("canvasName");
+    return merged;
   }
 }

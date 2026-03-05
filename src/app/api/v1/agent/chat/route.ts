@@ -18,6 +18,7 @@ const chatSchema = z.object({
   waitForResult: z.boolean().optional(),
   memoryWindow: z.number().int().min(1).max(100).optional(),
   projectId: z.string().min(1).max(128).optional(),
+  canvasId: z.string().min(1).max(128).optional(),
   canvasName: z.string().min(1).max(128).optional(),
   correlationId: z.string().min(1).max(128).optional(),
   traceId: z.string().min(1).max(128).optional(),
@@ -93,6 +94,7 @@ export async function POST(request: Request) {
   const waitForResult = parsed.data.waitForResult === true
   const memoryWindow = parsed.data.memoryWindow ?? 20
   const projectId = parsed.data.projectId
+  const canvasId = parsed.data.canvasId?.trim()
   const canvasName = parsed.data.canvasName?.trim()
   if (projectId) {
     await assertProjectAccess(user.id, projectId)
@@ -184,6 +186,9 @@ export async function POST(request: Request) {
       prompt,
       targetAgentId: parsed.data.targetAgentId,
       userId: user.id,
+      projectId,
+      canvasId,
+      canvasName,
       correlationId: contextEvent.correlationId,
       causationId: contextEvent.eventId,
       traceId,
@@ -214,6 +219,9 @@ export async function POST(request: Request) {
     targetAgentId: parsed.data.targetAgentId,
     timeoutMs: parsed.data.timeoutMs,
     userId: user.id,
+    projectId,
+    canvasId,
+    canvasName,
     correlationId: contextEvent.correlationId,
     causationId: contextEvent.eventId,
     traceId,

@@ -903,6 +903,7 @@ export default function WorkspacePage() {
           body: JSON.stringify({
             sessionId,
             projectId,
+            canvasId: activeCanvasId || undefined,
             canvasName,
             prompt,
             waitForResult: true,
@@ -927,8 +928,12 @@ export default function WorkspacePage() {
         if (!resultRecord) {
           continue
         }
+        const resultCanvasId = typeof resultRecord.canvasId === "string" ? resultRecord.canvasId : ""
         const resultCanvasName = typeof resultRecord.canvasName === "string" ? resultRecord.canvasName : ""
-        if (resultCanvasName && resultCanvasName !== canvasName) {
+        if (activeCanvasId && resultCanvasId && resultCanvasId !== activeCanvasId) {
+          continue
+        }
+        if (!activeCanvasId && resultCanvasName && resultCanvasName !== canvasName) {
           continue
         }
         const node = toCanvasNode(resultRecord.node)

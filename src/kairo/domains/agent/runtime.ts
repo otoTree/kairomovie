@@ -15,6 +15,10 @@ export interface SystemToolContext {
   spanId?: string;
   correlationId?: string;
   causationId?: string;
+  userId?: string;
+  projectId?: string;
+  canvasId?: string;
+  canvasName?: string;
 }
 
 export interface SystemTool {
@@ -515,7 +519,13 @@ export class AgentRuntime {
               }
 
               try {
-                 actionResult = await this.dispatchToolCall(action, { agentId: this.id, correlationId, causationId: actionEventId });
+                 const toolScope = this.extractToolScope(events);
+                 actionResult = await this.dispatchToolCall(action, {
+                   agentId: this.id,
+                   correlationId,
+                   causationId: actionEventId,
+                   ...toolScope,
+                 });
                  if (this.onActionResult) {
                      this.onActionResult({
                          action,
@@ -847,5 +857,38 @@ Or if no action is needed (waiting for user):
     // Let's just clone first to be safe.
     const clone = JSON.parse(JSON.stringify(args));
     return resolve(clone);
+  }
+
+  private extractToolScope(events: KairoEvent[]): Pick<SystemToolContext, "userId" | "projectId" | "canvasId" | "canvasName"> {
+    const scope: Pick<SystemToolContext, "userId" | "projectId" | "canvasId" | "canvasName"> = {};
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const event = events[i];
+      if (!event) continue;
+      if (event.type !== "kairo.user.message" && event.type !== `kairo.agent.${this.id}.message`) {
+        continue;
+      }
+      const data = event.data && typeof event.data === "object" && !Array.isArray(event.data)
+        ? (event.data as Record<string, unknown>)
+        : null;
+      if (!data) {
+        continue;
+      }
+      if (!scope.userId && typeof data.userId === "string" && data.userId.trim().length > 0) {
+        scope.userId = data.userId.trim();
+      }
+      if (!scope.projectId && typeof data.projectId === "string" && data.projectId.trim().length > 0) {
+        scope.projectId = data.projectId.trim();
+      }
+      if (!scope.canvasId && typeof data.canvasId === "string" && data.canvasId.trim().length > 0) {
+        scope.canvasId = data.canvasId.trim();
+      }
+      if (!scope.canvasName && typeof data.canvasName === "string" && data.canvasName.trim().length > 0) {
+        scope.canvasName = data.canvasName.trim();
+      }
+      if (scope.userId && scope.projectId && (scope.canvasId || scope.canvasName)) {
+        break;
+      }
+    }
+    return scope;
   }
 }
