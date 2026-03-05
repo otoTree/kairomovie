@@ -10,7 +10,7 @@ import { InMemoryGlobalBus, RingBufferEventStore, type EventBus, type KairoEvent
 import type { Vault } from "../vault/vault";
 import type { MemoryStore } from "../memory/memory-store";
 import { CapabilityRegistry, type AgentCapability } from "./capability-registry";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { ensureCloudTables } from "@/db/ensure-cloud-tables";
 import { apiCanvases } from "@/db/schema";
@@ -211,8 +211,7 @@ export class AgentPlugin implements Plugin {
         required: ["userId", "projectId", "text"],
       },
     }, async (args: any, context: any) => {
-      const userId = this.requireString(args, "userId");
-      const projectId = this.requireString(args, "projectId");
+      const { userId, projectId } = await this.resolveCanvasScope(args);
       const text = this.requireString(args, "text");
       const target = await this.findCanvasForTool(args, userId, projectId, args?.createIfMissing === true);
       const snapshot = this.normalizeCanvasSnapshot(target.snapshot, target.name);
@@ -270,8 +269,7 @@ export class AgentPlugin implements Plugin {
         required: ["userId", "projectId", "src"],
       },
     }, async (args: any, context: any) => {
-      const userId = this.requireString(args, "userId");
-      const projectId = this.requireString(args, "projectId");
+      const { userId, projectId } = await this.resolveCanvasScope(args);
       const src = this.requireString(args, "src");
       const target = await this.findCanvasForTool(args, userId, projectId, args?.createIfMissing === true);
       const snapshot = this.normalizeCanvasSnapshot(target.snapshot, target.name);
@@ -322,8 +320,7 @@ export class AgentPlugin implements Plugin {
         required: ["userId", "projectId"],
       },
     }, async (args: any) => {
-      const userId = this.requireString(args, "userId");
-      const projectId = this.requireString(args, "projectId");
+      const { userId, projectId } = await this.resolveCanvasScope(args);
       const target = await this.findCanvasForTool(args, userId, projectId, false);
       const snapshot = this.normalizeCanvasSnapshot(target.snapshot, target.name);
       return {
@@ -463,6 +460,90 @@ export class AgentPlugin implements Plugin {
     return value;
   }
 
+  private isUuid(value: string): boolean {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+  }
+
+  private normalizeScopeId(value: string | undefined, key: "userId" | "projectId"): string | undefined {
+    if (!value) return undefined;
+    const lowered = value.toLowerCase();
+    if (lowered === "default" || lowered === "auto" || lowered === "current") {
+      return undefined;
+    }
+    if (!this.isUuid(value)) {
+      throw new Error(`参数 ${key} 无效，需要 UUID，或传 default`);
+    }
+    return value;
+  }
+
+  private async resolveCanvasScope(args: any): Promise<{ userId: string; projectId: string }> {
+    const rawUserId = this.optionalString(args, "userId");
+    const rawProjectId = this.optionalString(args, "projectId");
+    let userId = this.normalizeScopeId(rawUserId, "userId");
+    let projectId = this.normalizeScopeId(rawProjectId, "projectId");
+    if (userId && projectId) {
+      return { userId, projectId };
+    }
+
+    await ensureCloudTables();
+    const canvasId = this.optionalString(args, "canvasId");
+    const canvasName = this.optionalString(args, "canvasName");
+
+    if (canvasId) {
+      if (!this.isUuid(canvasId)) {
+        throw new Error("参数 canvasId 无效，需要 UUID");
+      }
+      const [match] = await db
+        .select({
+          userId: apiCanvases.userId,
+          projectId: apiCanvases.projectId,
+        })
+        .from(apiCanvases)
+        .where(eq(apiCanvases.id, canvasId))
+        .limit(1);
+      if (match) {
+        userId = userId || match.userId;
+        projectId = projectId || match.projectId;
+      }
+    }
+
+    if ((!userId || !projectId) && canvasName) {
+      const [match] = await db
+        .select({
+          userId: apiCanvases.userId,
+          projectId: apiCanvases.projectId,
+        })
+        .from(apiCanvases)
+        .where(eq(apiCanvases.name, canvasName))
+        .orderBy(desc(apiCanvases.updatedAt))
+        .limit(1);
+      if (match) {
+        userId = userId || match.userId;
+        projectId = projectId || match.projectId;
+      }
+    }
+
+    if (!userId || !projectId) {
+      const [latest] = await db
+        .select({
+          userId: apiCanvases.userId,
+          projectId: apiCanvases.projectId,
+        })
+        .from(apiCanvases)
+        .orderBy(desc(apiCanvases.updatedAt))
+        .limit(1);
+      if (latest) {
+        userId = userId || latest.userId;
+        projectId = projectId || latest.projectId;
+      }
+    }
+
+    if (!userId || !projectId) {
+      throw new Error("无法推断 userId/projectId，请传入有效 UUID，或先创建画布后使用 default");
+    }
+    return { userId, projectId };
+  }
+
   private normalizeCanvasSnapshot(snapshot: Record<string, unknown> | null | undefined, fallbackName: string): WorkspaceCanvasSnapshot {
     const base = snapshot && typeof snapshot === "object" ? snapshot : {};
     const nodes = Array.isArray((base as any).nodes) ? (base as any).nodes : [];
@@ -489,6 +570,9 @@ export class AgentPlugin implements Plugin {
     await ensureCloudTables();
     const canvasId = this.optionalString(args, "canvasId");
     const canvasName = this.optionalString(args, "canvasName");
+    if (canvasId && !this.isUuid(canvasId)) {
+      throw new Error("参数 canvasId 无效，需要 UUID");
+    }
     const where =
       canvasId
         ? and(eq(apiCanvases.id, canvasId), eq(apiCanvases.userId, userId), eq(apiCanvases.projectId, projectId))
