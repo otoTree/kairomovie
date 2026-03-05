@@ -10,6 +10,32 @@ import { InMemoryGlobalBus, RingBufferEventStore, type EventBus, type KairoEvent
 import type { Vault } from "../vault/vault";
 import type { MemoryStore } from "../memory/memory-store";
 import { CapabilityRegistry, type AgentCapability } from "./capability-registry";
+import { and, eq } from "drizzle-orm";
+import { db } from "@/db";
+import { ensureCloudTables } from "@/db/ensure-cloud-tables";
+import { apiCanvases } from "@/db/schema";
+
+type WorkspaceCanvasNode = {
+  id: string;
+  type: "text" | "image" | "video";
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  text?: string;
+  src?: string;
+  title: string;
+  content?: string;
+};
+
+type WorkspaceCanvasSnapshot = {
+  nodes: WorkspaceCanvasNode[];
+  messages: Array<{ role: "user" | "assistant" | "thought" | "event"; text: string; createdAt?: string }>;
+  chatSessions?: Array<{ sessionId: string; lastAt: string; messageCount: number; lastMessage: string }>;
+  scale: number;
+  offset: { x: number; y: number };
+  canvasName: string;
+};
 
 export class AgentPlugin implements Plugin {
   readonly name = "agent";
@@ -163,6 +189,156 @@ export class AgentPlugin implements Plugin {
     }, async () => {
       return { capabilities: this.capabilityRegistry.getAllCapabilities() };
     });
+
+    this.registerSystemTool({
+      name: "kairo_canvas_add_text",
+      description: "向前端画布添加文本节点",
+      inputSchema: {
+        type: "object",
+        properties: {
+          userId: { type: "string", description: "用户 ID" },
+          projectId: { type: "string", description: "项目 ID" },
+          canvasId: { type: "string", description: "画布 ID（可选）" },
+          canvasName: { type: "string", description: "画布名称（未传 canvasId 时用于定位）" },
+          createIfMissing: { type: "boolean", description: "未找到画布时是否自动创建" },
+          title: { type: "string", description: "节点标题" },
+          text: { type: "string", description: "文本内容" },
+          x: { type: "number", description: "X 坐标" },
+          y: { type: "number", description: "Y 坐标" },
+          width: { type: "number", description: "宽度" },
+          height: { type: "number", description: "高度" },
+        },
+        required: ["userId", "projectId", "text"],
+      },
+    }, async (args: any, context: any) => {
+      const userId = this.requireString(args, "userId");
+      const projectId = this.requireString(args, "projectId");
+      const text = this.requireString(args, "text");
+      const target = await this.findCanvasForTool(args, userId, projectId, args?.createIfMissing === true);
+      const snapshot = this.normalizeCanvasSnapshot(target.snapshot, target.name);
+      const nodeId = `node-${crypto.randomUUID().slice(0, 8)}`;
+      const node: WorkspaceCanvasNode = {
+        id: nodeId,
+        type: "text",
+        x: this.optionalNumber(args, "x") ?? 120,
+        y: this.optionalNumber(args, "y") ?? 120,
+        width: this.optionalNumber(args, "width") ?? 360,
+        height: this.optionalNumber(args, "height") ?? 180,
+        title: this.optionalString(args, "title") || "文本",
+        text,
+      };
+      snapshot.nodes.push(node);
+      const [updated] = await db
+        .update(apiCanvases)
+        .set({ snapshot: snapshot as unknown as Record<string, unknown>, updatedAt: new Date() })
+        .where(and(eq(apiCanvases.id, target.id), eq(apiCanvases.userId, userId), eq(apiCanvases.projectId, projectId)))
+        .returning({ id: apiCanvases.id, name: apiCanvases.name });
+      if (!updated) {
+        throw new Error("画布更新失败");
+      }
+      await this.globalBus.publish({
+        type: "kairo.workspace.canvas.updated",
+        source: `agent:${context?.agentId || "default"}`,
+        data: { canvasId: updated.id, canvasName: updated.name, op: "add_text", node },
+        correlationId: context?.correlationId,
+        causationId: context?.causationId,
+        traceId: context?.traceId,
+        spanId: context?.spanId,
+      });
+      return { status: "ok", canvasId: updated.id, canvasName: updated.name, node };
+    });
+
+    this.registerSystemTool({
+      name: "kairo_canvas_add_image",
+      description: "向前端画布添加图片节点",
+      inputSchema: {
+        type: "object",
+        properties: {
+          userId: { type: "string", description: "用户 ID" },
+          projectId: { type: "string", description: "项目 ID" },
+          canvasId: { type: "string", description: "画布 ID（可选）" },
+          canvasName: { type: "string", description: "画布名称（未传 canvasId 时用于定位）" },
+          createIfMissing: { type: "boolean", description: "未找到画布时是否自动创建" },
+          title: { type: "string", description: "节点标题" },
+          src: { type: "string", description: "图片 URL" },
+          content: { type: "string", description: "附加描述" },
+          x: { type: "number", description: "X 坐标" },
+          y: { type: "number", description: "Y 坐标" },
+          width: { type: "number", description: "宽度" },
+          height: { type: "number", description: "高度" },
+        },
+        required: ["userId", "projectId", "src"],
+      },
+    }, async (args: any, context: any) => {
+      const userId = this.requireString(args, "userId");
+      const projectId = this.requireString(args, "projectId");
+      const src = this.requireString(args, "src");
+      const target = await this.findCanvasForTool(args, userId, projectId, args?.createIfMissing === true);
+      const snapshot = this.normalizeCanvasSnapshot(target.snapshot, target.name);
+      const nodeId = `node-${crypto.randomUUID().slice(0, 8)}`;
+      const node: WorkspaceCanvasNode = {
+        id: nodeId,
+        type: "image",
+        x: this.optionalNumber(args, "x") ?? 180,
+        y: this.optionalNumber(args, "y") ?? 180,
+        width: this.optionalNumber(args, "width") ?? 480,
+        height: this.optionalNumber(args, "height") ?? 320,
+        title: this.optionalString(args, "title") || "图片",
+        src,
+        content: this.optionalString(args, "content"),
+      };
+      snapshot.nodes.push(node);
+      const [updated] = await db
+        .update(apiCanvases)
+        .set({ snapshot: snapshot as unknown as Record<string, unknown>, updatedAt: new Date() })
+        .where(and(eq(apiCanvases.id, target.id), eq(apiCanvases.userId, userId), eq(apiCanvases.projectId, projectId)))
+        .returning({ id: apiCanvases.id, name: apiCanvases.name });
+      if (!updated) {
+        throw new Error("画布更新失败");
+      }
+      await this.globalBus.publish({
+        type: "kairo.workspace.canvas.updated",
+        source: `agent:${context?.agentId || "default"}`,
+        data: { canvasId: updated.id, canvasName: updated.name, op: "add_image", node },
+        correlationId: context?.correlationId,
+        causationId: context?.causationId,
+        traceId: context?.traceId,
+        spanId: context?.spanId,
+      });
+      return { status: "ok", canvasId: updated.id, canvasName: updated.name, node };
+    });
+
+    this.registerSystemTool({
+      name: "kairo_canvas_read",
+      description: "读取前端画布内容（节点与会话信息）",
+      inputSchema: {
+        type: "object",
+        properties: {
+          userId: { type: "string", description: "用户 ID" },
+          projectId: { type: "string", description: "项目 ID" },
+          canvasId: { type: "string", description: "画布 ID（可选）" },
+          canvasName: { type: "string", description: "画布名称（未传 canvasId 时用于定位）" },
+        },
+        required: ["userId", "projectId"],
+      },
+    }, async (args: any) => {
+      const userId = this.requireString(args, "userId");
+      const projectId = this.requireString(args, "projectId");
+      const target = await this.findCanvasForTool(args, userId, projectId, false);
+      const snapshot = this.normalizeCanvasSnapshot(target.snapshot, target.name);
+      return {
+        canvasId: target.id,
+        canvasName: target.name,
+        sessionId: target.sessionId,
+        updatedAt: target.updatedAt.toISOString(),
+        nodeCount: snapshot.nodes.length,
+        nodes: snapshot.nodes,
+        messages: snapshot.messages,
+        chatSessions: snapshot.chatSessions || [],
+        scale: snapshot.scale,
+        offset: snapshot.offset,
+      };
+    });
     
     // Subscribe to legacy messages and route to default
     this.globalBus.subscribe("kairo.legacy.*", async (event) => {
@@ -260,6 +436,111 @@ export class AgentPlugin implements Plugin {
     });
 
     return taskId;
+  }
+
+  private requireString(args: any, key: string): string {
+    const value = args?.[key];
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw new Error(`参数 ${key} 无效`);
+    }
+    return value.trim();
+  }
+
+  private optionalString(args: any, key: string): string | undefined {
+    const value = args?.[key];
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== "string") throw new Error(`参数 ${key} 无效`);
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+
+  private optionalNumber(args: any, key: string): number | undefined {
+    const value = args?.[key];
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      throw new Error(`参数 ${key} 无效`);
+    }
+    return value;
+  }
+
+  private normalizeCanvasSnapshot(snapshot: Record<string, unknown> | null | undefined, fallbackName: string): WorkspaceCanvasSnapshot {
+    const base = snapshot && typeof snapshot === "object" ? snapshot : {};
+    const nodes = Array.isArray((base as any).nodes) ? (base as any).nodes : [];
+    const messages = Array.isArray((base as any).messages) ? (base as any).messages : [];
+    const chatSessions = Array.isArray((base as any).chatSessions) ? (base as any).chatSessions : [];
+    const rawScale = typeof (base as any).scale === "number" && Number.isFinite((base as any).scale) ? (base as any).scale : 1;
+    const rawOffset = (base as any).offset && typeof (base as any).offset === "object" ? (base as any).offset : {};
+    const offsetX = typeof rawOffset.x === "number" && Number.isFinite(rawOffset.x) ? rawOffset.x : 0;
+    const offsetY = typeof rawOffset.y === "number" && Number.isFinite(rawOffset.y) ? rawOffset.y : 0;
+    const canvasName = typeof (base as any).canvasName === "string" && (base as any).canvasName.trim().length > 0
+      ? (base as any).canvasName.trim()
+      : fallbackName;
+    return {
+      nodes: nodes as WorkspaceCanvasNode[],
+      messages: messages as WorkspaceCanvasSnapshot["messages"],
+      chatSessions: chatSessions as WorkspaceCanvasSnapshot["chatSessions"],
+      scale: rawScale,
+      offset: { x: offsetX, y: offsetY },
+      canvasName,
+    };
+  }
+
+  private async findCanvasForTool(args: any, userId: string, projectId: string, createIfMissing: boolean) {
+    await ensureCloudTables();
+    const canvasId = this.optionalString(args, "canvasId");
+    const canvasName = this.optionalString(args, "canvasName");
+    const where =
+      canvasId
+        ? and(eq(apiCanvases.id, canvasId), eq(apiCanvases.userId, userId), eq(apiCanvases.projectId, projectId))
+        : and(eq(apiCanvases.name, canvasName || "默认画布"), eq(apiCanvases.userId, userId), eq(apiCanvases.projectId, projectId));
+    const [existing] = await db
+      .select({
+        id: apiCanvases.id,
+        name: apiCanvases.name,
+        sessionId: apiCanvases.sessionId,
+        snapshot: apiCanvases.snapshot,
+        updatedAt: apiCanvases.updatedAt,
+      })
+      .from(apiCanvases)
+      .where(where)
+      .limit(1);
+    if (existing) {
+      return existing;
+    }
+    if (!createIfMissing) {
+      throw new Error("画布不存在");
+    }
+    const name = canvasName || "默认画布";
+    const now = new Date();
+    const [created] = await db
+      .insert(apiCanvases)
+      .values({
+        userId,
+        projectId,
+        name,
+        sessionId: `canvas-${Date.now()}`,
+        snapshot: {
+          nodes: [],
+          messages: [],
+          chatSessions: [],
+          scale: 1,
+          offset: { x: 0, y: 0 },
+          canvasName: name,
+        },
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({
+        id: apiCanvases.id,
+        name: apiCanvases.name,
+        sessionId: apiCanvases.sessionId,
+        snapshot: apiCanvases.snapshot,
+        updatedAt: apiCanvases.updatedAt,
+      });
+    if (!created) {
+      throw new Error("画布创建失败");
+    }
+    return created;
   }
 
   private extractFirstJsonObject(text: string): string | undefined {
