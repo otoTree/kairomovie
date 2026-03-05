@@ -196,10 +196,10 @@ export class AgentPlugin implements Plugin {
       inputSchema: {
         type: "object",
         properties: {
-          userId: { type: "string", description: "用户 ID" },
-          projectId: { type: "string", description: "项目 ID" },
-          canvasId: { type: "string", description: "画布 ID（可选）" },
-          canvasName: { type: "string", description: "画布名称（未传 canvasId 时用于定位）" },
+          userId: { type: "string", description: "用户 ID（可选，默认使用当前会话）" },
+          projectId: { type: "string", description: "项目 ID（可选，默认使用当前会话）" },
+          canvasId: { type: "string", description: "画布 ID（可选，默认使用当前画布）" },
+          canvasName: { type: "string", description: "画布名称（可选，默认使用当前画布）" },
           createIfMissing: { type: "boolean", description: "未找到画布时是否自动创建" },
           title: { type: "string", description: "节点标题" },
           text: { type: "string", description: "文本内容" },
@@ -208,7 +208,7 @@ export class AgentPlugin implements Plugin {
           width: { type: "number", description: "宽度" },
           height: { type: "number", description: "高度" },
         },
-        required: ["userId", "projectId", "text"],
+        required: ["text"],
       },
     }, async (args: any, context: any) => {
       const toolArgs = this.mergeCanvasToolArgs(args, context);
@@ -254,10 +254,10 @@ export class AgentPlugin implements Plugin {
       inputSchema: {
         type: "object",
         properties: {
-          userId: { type: "string", description: "用户 ID" },
-          projectId: { type: "string", description: "项目 ID" },
-          canvasId: { type: "string", description: "画布 ID（可选）" },
-          canvasName: { type: "string", description: "画布名称（未传 canvasId 时用于定位）" },
+          userId: { type: "string", description: "用户 ID（可选，默认使用当前会话）" },
+          projectId: { type: "string", description: "项目 ID（可选，默认使用当前会话）" },
+          canvasId: { type: "string", description: "画布 ID（可选，默认使用当前画布）" },
+          canvasName: { type: "string", description: "画布名称（可选，默认使用当前画布）" },
           createIfMissing: { type: "boolean", description: "未找到画布时是否自动创建" },
           title: { type: "string", description: "节点标题" },
           src: { type: "string", description: "图片 URL" },
@@ -267,7 +267,7 @@ export class AgentPlugin implements Plugin {
           width: { type: "number", description: "宽度" },
           height: { type: "number", description: "高度" },
         },
-        required: ["userId", "projectId", "src"],
+        required: ["src"],
       },
     }, async (args: any, context: any) => {
       const toolArgs = this.mergeCanvasToolArgs(args, context);
@@ -314,12 +314,12 @@ export class AgentPlugin implements Plugin {
       inputSchema: {
         type: "object",
         properties: {
-          userId: { type: "string", description: "用户 ID" },
-          projectId: { type: "string", description: "项目 ID" },
-          canvasId: { type: "string", description: "画布 ID（可选）" },
-          canvasName: { type: "string", description: "画布名称（未传 canvasId 时用于定位）" },
+          userId: { type: "string", description: "用户 ID（可选，默认使用当前会话）" },
+          projectId: { type: "string", description: "项目 ID（可选，默认使用当前会话）" },
+          canvasId: { type: "string", description: "画布 ID（可选，默认使用当前画布）" },
+          canvasName: { type: "string", description: "画布名称（可选，默认使用当前画布）" },
         },
-        required: ["userId", "projectId"],
+        required: [],
       },
     }, async (args: any, context: any) => {
       const toolArgs = this.mergeCanvasToolArgs(args, context);
