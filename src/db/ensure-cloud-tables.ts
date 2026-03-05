@@ -145,6 +145,30 @@ export async function ensureCloudTables() {
     CREATE INDEX IF NOT EXISTS idx_api_canvas_histories_project_time
     ON api_canvas_histories(project_id, updated_at)
   `);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS api_canvases (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name text NOT NULL,
+      session_id text NOT NULL,
+      snapshot jsonb NOT NULL DEFAULT '{}'::jsonb,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS uniq_api_canvases_project_name
+    ON api_canvases(project_id, name)
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS idx_api_canvases_user_time
+    ON api_canvases(user_id, updated_at)
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS idx_api_canvases_project_time
+    ON api_canvases(project_id, updated_at)
+  `);
 
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS api_logs (

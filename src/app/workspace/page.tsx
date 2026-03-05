@@ -128,6 +128,20 @@ type CanvasHistoryListResponse = {
   count: number
 }
 
+type CanvasItem = {
+  id: string
+  name: string
+  sessionId: string
+  snapshot?: CanvasSnapshot
+  createdAt: string
+  updatedAt: string
+}
+
+type CanvasListResponse = {
+  items: CanvasItem[]
+  count: number
+}
+
 function toText(value: unknown) {
   if (typeof value === "string") {
     return value
@@ -295,6 +309,10 @@ export default function WorkspacePage() {
   const [historySaving, setHistorySaving] = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [activeHistoryId, setActiveHistoryId] = useState("")
+  const [canvasItems, setCanvasItems] = useState<CanvasItem[]>([])
+  const [canvasLoading, setCanvasLoading] = useState(false)
+  const [canvasSaving, setCanvasSaving] = useState(false)
+  const [activeCanvasId, setActiveCanvasId] = useState("")
   const [chatSessions, setChatSessions] = useState<SessionSummary[]>([])
   const [sessionListLoading, setSessionListLoading] = useState(false)
   const [chatHistoryLoading, setChatHistoryLoading] = useState(false)
@@ -386,6 +404,53 @@ export default function WorkspacePage() {
     []
   )
 
+  const applyCanvasSnapshot = useCallback(
+    async (authToken: string, nextProjectId: string, canvas: CanvasItem) => {
+      if (!canvas.snapshot) {
+        return
+      }
+      setActiveCanvasId(canvas.id)
+      setNodes(canvas.snapshot.nodes)
+      setMessages(canvas.snapshot.messages)
+      setChatSessions(canvas.snapshot.chatSessions || [])
+      setScale(canvas.snapshot.scale)
+      setOffset(canvas.snapshot.offset)
+      setCanvasName(canvas.snapshot.canvasName || canvas.name)
+      const nextSessionId = canvas.sessionId || createChatSessionId(canvas.snapshot.canvasName || canvas.name)
+      setSessionId(nextSessionId)
+      await Promise.all([
+        loadChatSessions(authToken, nextProjectId, canvas.snapshot.canvasName || canvas.name),
+        loadChatHistory(authToken, nextProjectId, nextSessionId),
+      ])
+    },
+    [loadChatHistory, loadChatSessions]
+  )
+
+  const loadCanvases = useCallback(
+    async (authToken: string, nextProjectId: string) => {
+      setCanvasLoading(true)
+      try {
+        const result = await requestJson<CanvasListResponse>(
+          `/api/v1/workspace/canvases?projectId=${encodeURIComponent(nextProjectId)}&withSnapshot=true`,
+          { method: "GET" },
+          authToken
+        )
+        setCanvasItems(result.items)
+        if (result.items.length === 0) {
+          setActiveCanvasId("")
+          return
+        }
+        const current = result.items.find((item) => item.id === activeCanvasId) || result.items[0]
+        await applyCanvasSnapshot(authToken, nextProjectId, current)
+      } catch (error) {
+        setMessage(toErrorMessage(error))
+      } finally {
+        setCanvasLoading(false)
+      }
+    },
+    [activeCanvasId, applyCanvasSnapshot]
+  )
+
   useEffect(() => {
     if (!ready) {
       return
@@ -401,15 +466,14 @@ export default function WorkspacePage() {
         setProjectId(project.id)
         await Promise.all([
           loadAssets(token, project.id),
+          loadCanvases(token, project.id),
           loadCanvasHistories(token, project.id),
-          loadChatSessions(token, project.id, canvasName),
-          loadChatHistory(token, project.id, sessionId),
         ])
       } catch (error) {
         setMessage(toErrorMessage(error))
       }
     })()
-  }, [ready, token, user, router, loadAssets, loadCanvasHistories, loadChatSessions, loadChatHistory, canvasName, sessionId])
+  }, [ready, token, user, router, loadAssets, loadCanvases, loadCanvasHistories])
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -432,6 +496,7 @@ export default function WorkspacePage() {
     const nextSessionId = createChatSessionId(nextCanvasName)
     setSessionId(nextSessionId)
     setChatSessions([])
+    setActiveCanvasId("")
     setScale(1)
     setOffset({ x: BOARD_SIZE / 2 - 700, y: BOARD_SIZE / 2 - 420 })
     setCanvasName(nextCanvasName)
@@ -814,6 +879,105 @@ export default function WorkspacePage() {
     await loadChatHistory(token, projectId, nextSessionId)
   }
 
+  function buildCurrentSnapshot(): CanvasSnapshot {
+    return {
+      nodes,
+      messages,
+      chatSessions,
+      scale,
+      offset,
+      canvasName,
+    }
+  }
+
+  async function createCanvasRecord() {
+    if (!token || !projectId) {
+      return
+    }
+    setCanvasSaving(true)
+    try {
+      const saved = await requestJson<CanvasItem>(
+        "/api/v1/workspace/canvases",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            projectId,
+            name: toFolderName(canvasName),
+            sessionId,
+            snapshot: buildCurrentSnapshot(),
+          }),
+        },
+        token
+      )
+      setActiveCanvasId(saved.id)
+      await loadCanvases(token, projectId)
+      setMessage(`已创建画布：${saved.name}`)
+    } catch (error) {
+      setMessage(toErrorMessage(error))
+    } finally {
+      setCanvasSaving(false)
+    }
+  }
+
+  async function updateCanvasRecord() {
+    if (!token || !projectId || !activeCanvasId) {
+      await createCanvasRecord()
+      return
+    }
+    setCanvasSaving(true)
+    try {
+      const updated = await requestJson<CanvasItem>(
+        "/api/v1/workspace/canvases",
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            id: activeCanvasId,
+            projectId,
+            name: toFolderName(canvasName),
+            sessionId,
+            snapshot: buildCurrentSnapshot(),
+          }),
+        },
+        token
+      )
+      setActiveCanvasId(updated.id)
+      await loadCanvases(token, projectId)
+      setMessage(`已保存画布：${updated.name}`)
+    } catch (error) {
+      setMessage(toErrorMessage(error))
+    } finally {
+      setCanvasSaving(false)
+    }
+  }
+
+  async function loadCanvasRecord(item: CanvasItem) {
+    if (!token || !projectId) {
+      return
+    }
+    await applyCanvasSnapshot(token, projectId, item)
+    setMessage(`已加载画布：${item.name}`)
+  }
+
+  async function deleteCanvasRecord(id: string) {
+    if (!token || !projectId) {
+      return
+    }
+    try {
+      await requestJson(
+        `/api/v1/workspace/canvases?projectId=${encodeURIComponent(projectId)}&id=${encodeURIComponent(id)}`,
+        { method: "DELETE" },
+        token
+      )
+      if (activeCanvasId === id) {
+        setActiveCanvasId("")
+      }
+      await loadCanvases(token, projectId)
+      setMessage("已删除画布")
+    } catch (error) {
+      setMessage(toErrorMessage(error))
+    }
+  }
+
   async function saveCanvasHistory() {
     if (!token || !projectId) {
       return
@@ -829,14 +993,7 @@ export default function WorkspacePage() {
             projectId,
             name: historyName,
             sessionId,
-            snapshot: {
-              nodes,
-              messages,
-              chatSessions,
-              scale,
-              offset,
-              canvasName,
-            },
+            snapshot: buildCurrentSnapshot(),
           }),
         },
         token
@@ -867,14 +1024,7 @@ export default function WorkspacePage() {
             projectId,
             name: toFolderName(canvasName),
             sessionId,
-            snapshot: {
-              nodes,
-              messages,
-              chatSessions,
-              scale,
-              offset,
-              canvasName,
-            },
+            snapshot: buildCurrentSnapshot(),
           }),
         },
         token
@@ -1077,6 +1227,17 @@ export default function WorkspacePage() {
               size={isSidebarHover ? "default" : "icon"}
               variant="outline"
               className="cursor-pointer"
+              disabled={canvasSaving}
+              onClick={() => void updateCanvasRecord()}
+              title={activeCanvasId ? "保存当前画布" : "创建画布"}
+            >
+              <Save />
+              {isSidebarHover ? (canvasSaving ? "保存中..." : activeCanvasId ? "保存画布" : "创建画布") : null}
+            </Button>
+            <Button
+              size={isSidebarHover ? "default" : "icon"}
+              variant="outline"
+              className="cursor-pointer"
               disabled={historySaving}
               onClick={saveCanvasHistory}
               title="保存历史"
@@ -1115,6 +1276,33 @@ export default function WorkspacePage() {
                   </div>
                 ))}
                 {mediaAssets.length === 0 ? <p className="text-xs text-black/55">暂无可用素材</p> : null}
+              </div>
+            </div>
+          ) : null}
+
+          {isSidebarHover ? (
+            <div className="mt-3 space-y-2">
+              <p className="text-[11px] text-black/50">项目画布</p>
+              <div className="max-h-40 space-y-2 overflow-auto rounded-md border border-black/8 p-2">
+                {canvasItems.map((item) => (
+                  <div
+                    key={item.id}
+                    className={`rounded-lg border p-2 ${item.id === activeCanvasId ? "border-black/30 bg-black/[0.03]" : "border-black/8"}`}
+                  >
+                    <p className="truncate text-xs font-medium">{item.name}</p>
+                    <p className="mt-1 text-[11px] text-black/45">{new Date(item.updatedAt).toLocaleString()}</p>
+                    <div className="mt-2 flex gap-2">
+                      <Button size="sm" variant="outline" className="w-full cursor-pointer" onClick={() => void loadCanvasRecord(item)}>
+                        打开
+                      </Button>
+                      <Button size="icon" variant="outline" className="cursor-pointer" onClick={() => void deleteCanvasRecord(item.id)}>
+                        <Trash2 />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+                {canvasLoading ? <p className="text-xs text-black/55">画布加载中...</p> : null}
+                {!canvasLoading && canvasItems.length === 0 ? <p className="text-xs text-black/55">暂无画布，请先创建</p> : null}
               </div>
             </div>
           ) : null}
