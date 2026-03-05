@@ -4,7 +4,7 @@ import type { AgentPlugin } from "../agent/agent.plugin";
 import { getAppEnv } from "../../../lib/env";
 import { randomUUID } from "crypto";
 import { db } from "../../../db";
-import { apiArtifacts } from "../../../db/schema";
+import { apiArtifactFolders, apiArtifacts } from "../../../db/schema";
 import { ensureCloudTables } from "../../../db/ensure-cloud-tables";
 import { createStorageProvider } from "../../../lib/storage-provider";
 import { getProjectArtifactKey } from "../../../lib/storage-keys";
@@ -248,6 +248,11 @@ function toSafeSegment(value: string) {
     .slice(0, 64) || "default";
 }
 
+function toCanvasFolderName(raw: string) {
+  const normalized = raw.trim().replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ");
+  return normalized || "未命名画布";
+}
+
 function inferExtensionFromContentType(contentType: string | null | undefined) {
   const normalized = (contentType || "").toLowerCase().split(";")[0].trim();
   if (normalized === "image/png") return "png";
@@ -297,9 +302,37 @@ async function persistMediaArtifacts(input: {
 
   await ensureCloudTables();
   const storage = createStorageProvider();
-  const taskSegment = toSafeSegment(
+  const canvasFolderName = input.canvasName && input.canvasName.trim().length > 0
+    ? toCanvasFolderName(input.canvasName)
+    : "";
+  const runSegment = toSafeSegment(
     `toapis-${input.kind}-${input.providerTaskId || input.taskId || randomUUID()}`
   );
+  const taskSegment = canvasFolderName || runSegment;
+  const now = new Date();
+  try {
+    await db
+      .insert(apiArtifactFolders)
+      .values({
+        userId: input.userId,
+        projectId: input.projectId,
+        name: taskSegment,
+        source: canvasFolderName ? "canvas" : "system",
+        linkedCanvasName: canvasFolderName || null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [apiArtifactFolders.projectId, apiArtifactFolders.name],
+        set: {
+          source: canvasFolderName ? "canvas" : "system",
+          linkedCanvasName: canvasFolderName || null,
+          updatedAt: now,
+        },
+      });
+  } catch (error) {
+    console.warn("[ToAPIs] 文件夹记录写入失败，继续写入产物", error);
+  }
   const persisted: PersistedMediaItem[] = [];
 
   for (let index = 0; index < input.items.length; index += 1) {
@@ -329,9 +362,7 @@ async function persistMediaArtifacts(input: {
         inferExtensionFromUrl(sourceUrl) ||
         (input.kind === "video" ? "mp4" : "png");
       const fileName = `${input.kind}-${String(index + 1).padStart(2, "0")}.${ext}`;
-      const relativePath = input.canvasName
-        ? `${toSafeSegment(input.canvasName)}/${fileName}`
-        : fileName;
+      const relativePath = canvasFolderName ? `${runSegment}/${fileName}` : fileName;
       const objectKey = getProjectArtifactKey(input.projectId, taskSegment, relativePath);
 
       await storage.put({
@@ -340,7 +371,8 @@ async function persistMediaArtifacts(input: {
         contentType: contentType || undefined,
       });
       const publicUrl = await storage.getUrl(objectKey).catch(() => null);
-      const now = new Date();
+      const blobUrl = publicUrl?.url || sourceUrl || null;
+      const itemNow = new Date();
 
       await db
         .insert(apiArtifacts)
@@ -361,9 +393,10 @@ async function persistMediaArtifacts(input: {
             sourceUrl: sourceUrl || null,
             canvasName: input.canvasName || null,
             providerTaskId: input.providerTaskId || null,
+            blobUrl,
           },
-          createdAt: now,
-          updatedAt: now,
+          createdAt: itemNow,
+          updatedAt: itemNow,
         })
         .onConflictDoUpdate({
           target: [apiArtifacts.projectId, apiArtifacts.taskId, apiArtifacts.objectKey],
@@ -380,8 +413,9 @@ async function persistMediaArtifacts(input: {
               sourceUrl: sourceUrl || null,
               canvasName: input.canvasName || null,
               providerTaskId: input.providerTaskId || null,
+              blobUrl,
             },
-            updatedAt: now,
+            updatedAt: itemNow,
           },
         });
 

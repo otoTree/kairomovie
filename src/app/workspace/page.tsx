@@ -742,7 +742,21 @@ export default function WorkspacePage() {
       title: asset.fileName,
       content: typeof asset.metadata?.content === "string" ? asset.metadata.content : "",
     }
-    setNodes((prev) => [...prev, node])
+    setNodes((prev) => {
+      const nextNodes = [...prev, node]
+      const nextSnapshot = {
+        ...buildCurrentSnapshot(),
+        nodes: nextNodes,
+      }
+      void upsertCanvasRecord({
+        silent: true,
+        reload: false,
+        snapshot: nextSnapshot,
+      }).catch((error) => {
+        setMessage(toErrorMessage(error))
+      })
+      return nextNodes
+    })
   }
 
   function addMediaNode(asset: Asset) {
@@ -1107,7 +1121,19 @@ export default function WorkspacePage() {
                   if (prev.some((current) => current.id === node.id)) {
                     return prev
                   }
-                  return [...prev, node]
+                  const nextNodes = [...prev, node]
+                  const nextSnapshot = {
+                    ...buildCurrentSnapshot(),
+                    nodes: nextNodes,
+                  }
+                  void upsertCanvasRecord({
+                    silent: true,
+                    reload: false,
+                    snapshot: nextSnapshot,
+                  }).catch((error) => {
+                    setMessage(toErrorMessage(error))
+                  })
+                  return nextNodes
                 })
                 const rect = viewportRef.current?.getBoundingClientRect()
                 if (rect) {
@@ -1299,10 +1325,11 @@ export default function WorkspacePage() {
     }
   }
 
-  async function upsertCanvasRecord(options?: { silent?: boolean }) {
+  async function upsertCanvasRecord(options?: { silent?: boolean; reload?: boolean; snapshot?: CanvasSnapshot }) {
     if (!token || !projectId) {
       return null
     }
+    const snapshot = options?.snapshot || buildCurrentSnapshot()
     const requestPath = "/api/v1/workspace/canvases"
     const requestBody = activeCanvasId
       ? {
@@ -1310,13 +1337,13 @@ export default function WorkspacePage() {
           projectId,
           name: toFolderName(canvasName),
           sessionId,
-          snapshot: buildCurrentSnapshot(),
+          snapshot,
         }
       : {
           projectId,
           name: toFolderName(canvasName),
           sessionId,
-          snapshot: buildCurrentSnapshot(),
+          snapshot,
         }
     const method = activeCanvasId ? "PATCH" : "POST"
     const saved = await requestJson<CanvasItem>(
@@ -1328,7 +1355,13 @@ export default function WorkspacePage() {
       token
     )
     setActiveCanvasId(saved.id)
-    await loadCanvases(token, projectId, saved.id)
+    setCanvasItems((prev) => {
+      const deduped = prev.filter((item) => item.id !== saved.id)
+      return [saved, ...deduped]
+    })
+    if (options?.reload !== false) {
+      await loadCanvases(token, projectId, saved.id)
+    }
     if (!options?.silent) {
       setMessage(`已保存画布：${saved.name}`)
     }
