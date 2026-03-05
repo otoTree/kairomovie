@@ -382,7 +382,6 @@ export default function WorkspacePage() {
   const [chatSessions, setChatSessions] = useState<SessionSummary[]>([])
   const [sessionListLoading, setSessionListLoading] = useState(false)
   const [chatHistoryLoading, setChatHistoryLoading] = useState(false)
-  const [hoveredNodeId, setHoveredNodeId] = useState("")
   const [activeNodeId, setActiveNodeId] = useState("")
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const dragStartRef = useRef<DragStartState | null>(null)
@@ -812,7 +811,6 @@ export default function WorkspacePage() {
 
   function removeNode(nodeId: string) {
     setNodes((prev) => prev.filter((node) => node.id !== nodeId))
-    setHoveredNodeId((current) => (current === nodeId ? "" : current))
     setActiveNodeId((current) => (current === nodeId ? "" : current))
   }
 
@@ -1278,7 +1276,7 @@ export default function WorkspacePage() {
           ) : null}
           {nodes.map((node) => {
             const isNodeActive = activeNodeId === node.id
-            const showNodeToolbar = hoveredNodeId === node.id || isNodeActive
+            const showNodeToolbar = isNodeActive
             return (
               <div
                 key={node.id}
@@ -1286,8 +1284,6 @@ export default function WorkspacePage() {
                   isNodeActive ? "z-10 border-sky-500 shadow-[0_10px_22px_rgba(2,132,199,0.2)]" : "border-black/12"
                 }`}
                 style={{ left: node.x, top: node.y, width: node.width, height: node.height }}
-                onMouseEnter={() => setHoveredNodeId(node.id)}
-                onMouseLeave={() => setHoveredNodeId((current) => (current === node.id ? "" : current))}
                 onMouseDown={() => setActiveNodeId(node.id)}
               >
                 {showNodeToolbar ? (
