@@ -118,7 +118,7 @@ export class ToAPIsPlugin implements Plugin {
 
         if (kind === "image") {
           const prompt = readString(args, "prompt");
-          const model = readOptionalString(args, "model") || process.env.TOAPIS_IMAGE_MODEL_NAME || "gpt-4o-image";
+          const model = readOptionalString(args, "model") || process.env.TOAPIS_IMAGE_MODEL_NAME || "nano-banana-2";
           const n = readOptionalNumber(args, "n");
           const size = readOptionalString(args, "size");
 
