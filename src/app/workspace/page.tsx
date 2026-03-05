@@ -6,6 +6,7 @@ import {
   FileImage,
   FileText,
   FolderOpen,
+  GripHorizontal,
   History,
   Link2,
   MessageSquareText,
@@ -726,7 +727,7 @@ export default function WorkspacePage() {
     return { x: snappedX, y: snappedY, guides: { x: guideX, y: guideY } }
   }
 
-  function startNodeDrag(event: MouseEvent<HTMLDivElement>, nodeId: string) {
+  function startNodeDrag(event: MouseEvent<HTMLElement>, nodeId: string) {
     if (event.button !== 0) {
       return
     }
@@ -823,6 +824,10 @@ export default function WorkspacePage() {
 
   function updateTextNode(id: string, text: string) {
     setNodes((prev) => prev.map((node) => (node.id === id ? { ...node, text } : node)))
+  }
+
+  function updateNodeTitle(id: string, title: string) {
+    setNodes((prev) => prev.map((node) => (node.id === id ? { ...node, title } : node)))
   }
 
   function updateNodeMeta(id: string, patch: Partial<Pick<CanvasNode, "content" | "contextEnabled" | "contextLabel">>) {
@@ -1385,8 +1390,25 @@ export default function WorkspacePage() {
                     <div className="absolute -bottom-1 -right-1 size-2 rounded-full border border-sky-500 bg-white" />
                   </>
                 ) : null}
-                <div className="mb-1 flex cursor-move items-center justify-between" onMouseDown={(event) => startNodeDrag(event, node.id)}>
-                  <p className="truncate text-xs font-medium">{node.title}</p>
+                <div className="mb-1 flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md border border-black/10 text-black/55 hover:bg-black/[0.03]"
+                    onMouseDown={(event) => startNodeDrag(event, node.id)}
+                    title="拖拽"
+                  >
+                    <GripHorizontal className="size-3.5" />
+                  </button>
+                  {node.type === "text" ? (
+                    <Input
+                      value={node.title}
+                      onChange={(event) => updateNodeTitle(node.id, event.target.value)}
+                      placeholder="文本卡片标题"
+                      className="h-6 min-w-0 flex-1 border-black/10 px-2 text-xs"
+                    />
+                  ) : (
+                    <p className="min-w-0 flex-1 truncate text-xs font-medium">{node.title}</p>
+                  )}
                   <Badge variant="outline">{node.type}</Badge>
                 </div>
                 <div className="flex h-[calc(100%-30px)] min-h-0 flex-col">
