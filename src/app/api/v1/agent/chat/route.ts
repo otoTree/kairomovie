@@ -1,9 +1,12 @@
 import { randomUUID } from "crypto"
 import { NextResponse } from "next/server"
+import { and, eq } from "drizzle-orm"
 import { z } from "zod"
+import { db } from "@/db"
+import { projects } from "@/db/schema"
 import { getAuthUserFromAuthorizationHeader } from "@/lib/api-auth"
 import { createKairoInterface } from "@/kairo/interface"
-import { appendSessionMemory, appendSessionMemoryEvent, listRecentSessionMemory } from "@/lib/session-memory"
+import { appendSessionMemory, appendSessionMemoryEvent, listRecentSessionMemory, syncSessionMemoryMarkdown } from "@/lib/session-memory"
 
 export const runtime = "nodejs"
 
@@ -14,10 +17,63 @@ const chatSchema = z.object({
   timeoutMs: z.number().int().min(1000).max(120000).optional(),
   waitForResult: z.boolean().optional(),
   memoryWindow: z.number().int().min(1).max(100).optional(),
+  projectId: z.string().min(1).max(128).optional(),
+  canvasName: z.string().min(1).max(128).optional(),
   correlationId: z.string().min(1).max(128).optional(),
   traceId: z.string().min(1).max(128).optional(),
   spanId: z.string().min(1).max(128).optional(),
 })
+
+async function assertProjectAccess(userId: string, projectId: string) {
+  const [project] = await db
+    .select({ id: projects.id })
+    .from(projects)
+    .where(and(eq(projects.id, projectId), eq(projects.userId, userId)))
+    .limit(1)
+  if (!project) {
+    throw new Error("项目不存在或无权限")
+  }
+}
+
+function mapMemoryRole(role: string) {
+  if (role === "assistant" || role === "user" || role === "thought" || role === "event") {
+    return role
+  }
+  if (role === "system") {
+    return "event"
+  }
+  return "event"
+}
+
+export async function GET(request: Request) {
+  const user = await getAuthUserFromAuthorizationHeader(request.headers.get("authorization"))
+  if (!user) {
+    return NextResponse.json({ message: "未授权" }, { status: 401 })
+  }
+  const { searchParams } = new URL(request.url)
+  const sessionId = searchParams.get("sessionId")?.trim() || ""
+  const projectId = searchParams.get("projectId")?.trim() || undefined
+  const limitRaw = Number(searchParams.get("limit") || 120)
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 500) : 120
+  if (!sessionId) {
+    return NextResponse.json({ message: "sessionId 不能为空" }, { status: 400 })
+  }
+  if (projectId) {
+    await assertProjectAccess(user.id, projectId)
+  }
+  const items = await listRecentSessionMemory(user.id, sessionId, limit, projectId)
+  return NextResponse.json({
+    sessionId,
+    items: items.map((item) => ({
+      role: mapMemoryRole(item.role),
+      text: item.content,
+      createdAt: item.createdAt,
+      eventType: item.eventType,
+      metadata: item.metadata ?? {},
+    })),
+    count: items.length,
+  })
+}
 
 export async function POST(request: Request) {
   const user = await getAuthUserFromAuthorizationHeader(request.headers.get("authorization"))
@@ -36,10 +92,15 @@ export async function POST(request: Request) {
   const prompt = parsed.data.prompt.trim()
   const waitForResult = parsed.data.waitForResult === true
   const memoryWindow = parsed.data.memoryWindow ?? 20
+  const projectId = parsed.data.projectId
+  const canvasName = parsed.data.canvasName?.trim()
+  if (projectId) {
+    await assertProjectAccess(user.id, projectId)
+  }
   const correlationId = parsed.data.correlationId || randomUUID()
   const traceId = parsed.data.traceId || correlationId
   const contextSpanId = parsed.data.spanId || randomUUID()
-  const memories = await listRecentSessionMemory(user.id, sessionId, memoryWindow)
+  const memories = await listRecentSessionMemory(user.id, sessionId, memoryWindow, projectId)
 
   const contextEventPayload = {
     sessionId,
@@ -71,9 +132,11 @@ export async function POST(request: Request) {
         contextEventId: contextEvent.eventId,
         traceId,
         spanId: contextSpanId,
+        canvasName: canvasName || null,
       },
     },
     {
+      projectId: projectId ?? null,
       correlationId: contextEvent.correlationId,
       traceId,
       spanId: contextSpanId,
@@ -87,9 +150,10 @@ export async function POST(request: Request) {
     metadata: {
       targetAgentId: parsed.data.targetAgentId,
       contextCorrelationId: contextEvent.correlationId,
-        traceId,
+      traceId,
+      canvasName: canvasName || null,
     },
-  })
+  }, projectId)
 
 
   await appendSessionMemoryEvent(
@@ -103,9 +167,11 @@ export async function POST(request: Request) {
         targetAgentId: parsed.data.targetAgentId,
         contextCorrelationId: contextEvent.correlationId,
         traceId,
+        canvasName: canvasName || null,
       },
     },
     {
+      projectId: projectId ?? null,
       correlationId: contextEvent.correlationId,
       causationId: contextEvent.eventId,
       traceId,
@@ -123,6 +189,13 @@ export async function POST(request: Request) {
       traceId,
       spanId: randomUUID(),
     })
+    const memoryFile = await syncSessionMemoryMarkdown({
+      userId: user.id,
+      sessionId,
+      projectId,
+      canvasName,
+      limit: 400,
+    }).catch(() => null)
     return NextResponse.json({
       status: "accepted",
       mode: "event",
@@ -132,6 +205,7 @@ export async function POST(request: Request) {
       traceId: accepted.traceId,
       spanId: accepted.spanId,
       eventId: accepted.eventId,
+      memoryFile,
     })
   }
 
@@ -154,8 +228,9 @@ export async function POST(request: Request) {
       metadata: {
         correlationId: result.correlationId,
         traceId: result.traceId,
+        canvasName: canvasName || null,
       },
-    })
+    }, projectId)
     await appendSessionMemoryEvent(
       user.id,
       sessionId,
@@ -166,9 +241,11 @@ export async function POST(request: Request) {
         metadata: {
           correlationId: result.correlationId,
           traceId: result.traceId,
+          canvasName: canvasName || null,
         },
       },
       {
+        projectId: projectId ?? null,
         correlationId: result.correlationId,
         causationId: result.triggerEventId,
         traceId: result.traceId,
@@ -176,6 +253,13 @@ export async function POST(request: Request) {
       }
     )
   }
+  const memoryFile = await syncSessionMemoryMarkdown({
+    userId: user.id,
+    sessionId,
+    projectId,
+    canvasName,
+    limit: 400,
+  }).catch(() => null)
 
   return NextResponse.json({
     status: "completed",
@@ -189,5 +273,6 @@ export async function POST(request: Request) {
     messages: result.messages,
     thoughts: result.thoughts,
     events: result.events,
+    memoryFile,
   })
 }

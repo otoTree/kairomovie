@@ -217,6 +217,29 @@ export const apiArtifactFolders = pgTable(
   ]
 );
 
+export const apiCanvasHistories = pgTable(
+  'api_canvas_histories',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    sessionId: text('session_id').notNull(),
+    snapshot: jsonb('snapshot').$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('uniq_api_canvas_histories_project_name').on(table.projectId, table.name),
+    index('idx_api_canvas_histories_user_time').on(table.userId, table.updatedAt),
+    index('idx_api_canvas_histories_project_time').on(table.projectId, table.updatedAt),
+  ]
+);
+
 export const asyncTasks = pgTable(
   'async_tasks',
   {

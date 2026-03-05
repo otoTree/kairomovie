@@ -4,13 +4,16 @@ import Image from "next/image"
 import Link from "next/link"
 import {
   FolderOpen,
+  History,
   MessageSquareText,
   PanelRightClose,
   PanelRightOpen,
   Plus,
+  Save,
   SendHorizontal,
   Settings,
   Type,
+  Trash2,
   Upload,
   ZoomIn,
   ZoomOut,
@@ -61,6 +64,23 @@ type ChatResponse = {
   }>
 }
 
+type ChatHistoryResponse = {
+  sessionId: string
+  items: Array<{
+    role: "user" | "assistant" | "thought" | "event"
+    text: string
+    createdAt?: string
+  }>
+  count: number
+}
+
+type SessionSummary = {
+  sessionId: string
+  lastAt: string
+  messageCount: number
+  lastMessage: string
+}
+
 type EventItem = {
   id: string
   type: string
@@ -83,6 +103,29 @@ type CreateArtifactResponse = {
     url: string
     headers: Record<string, string>
   }
+}
+
+type CanvasSnapshot = {
+  nodes: CanvasNode[]
+  messages: Message[]
+  chatSessions?: SessionSummary[]
+  scale: number
+  offset: { x: number; y: number }
+  canvasName: string
+}
+
+type CanvasHistoryItem = {
+  id: string
+  name: string
+  sessionId: string
+  snapshot?: CanvasSnapshot
+  createdAt: string
+  updatedAt: string
+}
+
+type CanvasHistoryListResponse = {
+  items: CanvasHistoryItem[]
+  count: number
 }
 
 function toText(value: unknown) {
@@ -199,6 +242,17 @@ function createSessionId() {
   return `canvas-${Date.now()}`
 }
 
+function createChatSessionId(canvas: string) {
+  const safe = canvas
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 48)
+  return `${safe || "canvas"}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
 function toFolderName(raw: string) {
   const normalized = raw.trim().replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ")
   return normalized || "未命名画布"
@@ -237,6 +291,13 @@ export default function WorkspacePage() {
   const [isSidebarHover, setIsSidebarHover] = useState(false)
   const [chatCollapsed, setChatCollapsed] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [historyItems, setHistoryItems] = useState<CanvasHistoryItem[]>([])
+  const [historySaving, setHistorySaving] = useState(false)
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [activeHistoryId, setActiveHistoryId] = useState("")
+  const [chatSessions, setChatSessions] = useState<SessionSummary[]>([])
+  const [sessionListLoading, setSessionListLoading] = useState(false)
+  const [chatHistoryLoading, setChatHistoryLoading] = useState(false)
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const dragStartRef = useRef<DragStartState | null>(null)
   const panStartRef = useRef<PanStartState | null>(null)
@@ -256,6 +317,75 @@ export default function WorkspacePage() {
     }
   }, [])
 
+  const loadCanvasHistories = useCallback(async (authToken: string, nextProjectId: string) => {
+    setHistoryLoading(true)
+    try {
+      const result = await requestJson<CanvasHistoryListResponse>(
+        `/api/v1/workspace/histories?projectId=${encodeURIComponent(nextProjectId)}&withSnapshot=true`,
+        { method: "GET" },
+        authToken
+      )
+      setHistoryItems(result.items)
+      if (result.items.length === 0) {
+        setActiveHistoryId("")
+      } else if (!result.items.some((item) => item.id === activeHistoryId)) {
+        setActiveHistoryId("")
+      }
+    } catch (error) {
+      setMessage(toErrorMessage(error))
+    } finally {
+      setHistoryLoading(false)
+    }
+  }, [activeHistoryId])
+
+  const loadChatSessions = useCallback(
+    async (authToken: string, nextProjectId: string, nextCanvasName: string) => {
+      setSessionListLoading(true)
+      try {
+        const result = await requestJson<{ items: SessionSummary[]; count: number }>(
+          `/api/v1/agent/sessions?projectId=${encodeURIComponent(nextProjectId)}&canvasName=${encodeURIComponent(nextCanvasName)}&limit=30`,
+          { method: "GET" },
+          authToken
+        )
+        setChatSessions(result.items)
+      } catch (error) {
+        setMessage(toErrorMessage(error))
+      } finally {
+        setSessionListLoading(false)
+      }
+    },
+    []
+  )
+
+  const loadChatHistory = useCallback(
+    async (authToken: string, nextProjectId: string, nextSessionId: string) => {
+      if (!nextSessionId) {
+        setMessages([])
+        return
+      }
+      setChatHistoryLoading(true)
+      try {
+        const result = await requestJson<ChatHistoryResponse>(
+          `/api/v1/agent/chat?projectId=${encodeURIComponent(nextProjectId)}&sessionId=${encodeURIComponent(nextSessionId)}&limit=180`,
+          { method: "GET" },
+          authToken
+        )
+        setMessages(
+          result.items.map((item) => ({
+            role: item.role,
+            text: item.text,
+            createdAt: item.createdAt,
+          }))
+        )
+      } catch (error) {
+        setMessage(toErrorMessage(error))
+      } finally {
+        setChatHistoryLoading(false)
+      }
+    },
+    []
+  )
+
   useEffect(() => {
     if (!ready) {
       return
@@ -269,12 +399,17 @@ export default function WorkspacePage() {
       try {
         const project = await ensureDefaultProject(token)
         setProjectId(project.id)
-        await loadAssets(token, project.id)
+        await Promise.all([
+          loadAssets(token, project.id),
+          loadCanvasHistories(token, project.id),
+          loadChatSessions(token, project.id, canvasName),
+          loadChatHistory(token, project.id, sessionId),
+        ])
       } catch (error) {
         setMessage(toErrorMessage(error))
       }
     })()
-  }, [ready, token, user, router, loadAssets])
+  }, [ready, token, user, router, loadAssets, loadCanvasHistories, loadChatSessions, loadChatHistory, canvasName, sessionId])
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -283,13 +418,24 @@ export default function WorkspacePage() {
     window.localStorage.setItem(SESSION_STORAGE_KEY, sessionId)
   }, [sessionId])
 
+  useEffect(() => {
+    if (!token || !projectId) {
+      return
+    }
+    void loadChatSessions(token, projectId, canvasName)
+  }, [token, projectId, canvasName, loadChatSessions])
+
   function resetCanvas() {
+    const nextCanvasName = createCanvasName()
     setNodes([])
     setMessages([])
-    setSessionId(createSessionId())
+    const nextSessionId = createChatSessionId(nextCanvasName)
+    setSessionId(nextSessionId)
+    setChatSessions([])
     setScale(1)
     setOffset({ x: BOARD_SIZE / 2 - 700, y: BOARD_SIZE / 2 - 420 })
-    setCanvasName(createCanvasName())
+    setCanvasName(nextCanvasName)
+    setActiveHistoryId("")
     setMessage("已新建画布")
   }
 
@@ -601,7 +747,7 @@ export default function WorkspacePage() {
   }
 
   async function sendChat() {
-    if (!token) {
+    if (!token || !projectId) {
       return
     }
     if (!chatInput.trim()) {
@@ -620,6 +766,8 @@ export default function WorkspacePage() {
           method: "POST",
           body: JSON.stringify({
             sessionId,
+            projectId,
+            canvasName,
             prompt,
             waitForResult: true,
             timeoutMs: 90000,
@@ -639,10 +787,148 @@ export default function WorkspacePage() {
       } else {
         setMessages((prev) => [...prev, { role: "event", text: "已完成，但没有可展示内容。", createdAt: new Date().toISOString() }])
       }
+      await loadChatSessions(token, projectId, canvasName)
     } catch (error) {
       setMessage(toErrorMessage(error))
     } finally {
       setChatLoading(false)
+    }
+  }
+
+  async function createNewChatSession() {
+    if (!token || !projectId) {
+      return
+    }
+    const nextSessionId = createChatSessionId(canvasName)
+    setSessionId(nextSessionId)
+    setMessages([])
+    await loadChatSessions(token, projectId, canvasName)
+    setMessage("已新建会话")
+  }
+
+  async function switchChatSession(nextSessionId: string) {
+    if (!token || !projectId || !nextSessionId) {
+      return
+    }
+    setSessionId(nextSessionId)
+    await loadChatHistory(token, projectId, nextSessionId)
+  }
+
+  async function saveCanvasHistory() {
+    if (!token || !projectId) {
+      return
+    }
+    const historyName = toFolderName(canvasName)
+    setHistorySaving(true)
+    try {
+      const saved = await requestJson<CanvasHistoryItem>(
+        "/api/v1/workspace/histories",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            projectId,
+            name: historyName,
+            sessionId,
+            snapshot: {
+              nodes,
+              messages,
+              chatSessions,
+              scale,
+              offset,
+              canvasName,
+            },
+          }),
+        },
+        token
+      )
+      setActiveHistoryId(saved.id)
+      await loadCanvasHistories(token, projectId)
+      setMessage(`已保存历史：${saved.name}`)
+    } catch (error) {
+      setMessage(toErrorMessage(error))
+    } finally {
+      setHistorySaving(false)
+    }
+  }
+
+  async function updateCanvasHistory() {
+    if (!token || !projectId || !activeHistoryId) {
+      setMessage("请先选择一个历史记录")
+      return
+    }
+    setHistorySaving(true)
+    try {
+      const updated = await requestJson<CanvasHistoryItem>(
+        "/api/v1/workspace/histories",
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            id: activeHistoryId,
+            projectId,
+            name: toFolderName(canvasName),
+            sessionId,
+            snapshot: {
+              nodes,
+              messages,
+              chatSessions,
+              scale,
+              offset,
+              canvasName,
+            },
+          }),
+        },
+        token
+      )
+      setActiveHistoryId(updated.id)
+      await loadCanvasHistories(token, projectId)
+      setMessage(`已更新历史：${updated.name}`)
+    } catch (error) {
+      setMessage(toErrorMessage(error))
+    } finally {
+      setHistorySaving(false)
+    }
+  }
+
+  async function reloadHistoryToCanvas(history: CanvasHistoryItem) {
+    if (!history.snapshot) {
+      setMessage("该历史记录没有可用快照")
+      return
+    }
+    setNodes(history.snapshot.nodes)
+    setMessages(history.snapshot.messages)
+    setChatSessions(history.snapshot.chatSessions || [])
+    setScale(history.snapshot.scale)
+    setOffset(history.snapshot.offset)
+    setCanvasName(history.snapshot.canvasName || history.name)
+    const nextSessionId = history.sessionId || createChatSessionId(history.snapshot.canvasName || history.name)
+    setSessionId(nextSessionId)
+    setActiveHistoryId(history.id)
+    if (token && projectId) {
+      await Promise.all([
+        loadChatSessions(token, projectId, history.snapshot.canvasName || history.name),
+        loadChatHistory(token, projectId, nextSessionId),
+      ])
+    }
+    setMessage(`已加载历史：${history.name}`)
+  }
+
+  async function deleteCanvasHistory(id: string) {
+    if (!token || !projectId) {
+      return
+    }
+    try {
+      await requestJson(
+        `/api/v1/workspace/histories?projectId=${encodeURIComponent(projectId)}&id=${encodeURIComponent(id)}`,
+        { method: "DELETE" },
+        token
+      )
+      if (activeHistoryId === id) {
+        setActiveHistoryId("")
+      }
+      await loadCanvasHistories(token, projectId)
+      setMessage("已删除历史记录")
+    } catch (error) {
+      setMessage(toErrorMessage(error))
     }
   }
 
@@ -787,6 +1073,28 @@ export default function WorkspacePage() {
               <ZoomIn />
               {isSidebarHover ? "放大" : null}
             </Button>
+            <Button
+              size={isSidebarHover ? "default" : "icon"}
+              variant="outline"
+              className="cursor-pointer"
+              disabled={historySaving}
+              onClick={saveCanvasHistory}
+              title="保存历史"
+            >
+              <Save />
+              {isSidebarHover ? (historySaving ? "保存中..." : "保存历史") : null}
+            </Button>
+            <Button
+              size={isSidebarHover ? "default" : "icon"}
+              variant="outline"
+              className="cursor-pointer"
+              disabled={historySaving || !activeHistoryId}
+              onClick={updateCanvasHistory}
+              title="更新历史"
+            >
+              <History />
+              {isSidebarHover ? "更新历史" : null}
+            </Button>
           </div>
 
           {isSidebarHover ? (
@@ -807,6 +1115,33 @@ export default function WorkspacePage() {
                   </div>
                 ))}
                 {mediaAssets.length === 0 ? <p className="text-xs text-black/55">暂无可用素材</p> : null}
+              </div>
+            </div>
+          ) : null}
+
+          {isSidebarHover ? (
+            <div className="mt-3 space-y-2">
+              <p className="text-[11px] text-black/50">画布历史</p>
+              <div className="max-h-40 space-y-2 overflow-auto rounded-md border border-black/8 p-2">
+                {historyItems.map((item) => (
+                  <div
+                    key={item.id}
+                    className={`rounded-lg border p-2 ${item.id === activeHistoryId ? "border-black/30 bg-black/[0.03]" : "border-black/8"}`}
+                  >
+                    <p className="truncate text-xs font-medium">{item.name}</p>
+                    <p className="mt-1 text-[11px] text-black/45">{new Date(item.updatedAt).toLocaleString()}</p>
+                    <div className="mt-2 flex gap-2">
+                      <Button size="sm" variant="outline" className="w-full cursor-pointer" onClick={() => void reloadHistoryToCanvas(item)}>
+                        加载
+                      </Button>
+                      <Button size="icon" variant="outline" className="cursor-pointer" onClick={() => void deleteCanvasHistory(item.id)}>
+                        <Trash2 />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+                {historyLoading ? <p className="text-xs text-black/55">历史加载中...</p> : null}
+                {!historyLoading && historyItems.length === 0 ? <p className="text-xs text-black/55">暂无历史记录</p> : null}
               </div>
             </div>
           ) : null}
@@ -847,11 +1182,34 @@ export default function WorkspacePage() {
             <div className="flex items-center justify-between">
               <div className="space-y-1">
                 <CardTitle className="text-base">视频图片生成编导</CardTitle>
-                <p className="text-xs text-black/50">未命名对话</p>
+                <p className="text-xs text-black/50">当前会话：{sessionId}</p>
+                <select
+                  className="mt-1 h-8 w-[200px] rounded-md border border-black/10 bg-white px-2 text-xs"
+                  value={sessionId}
+                  onChange={(event) => void switchChatSession(event.target.value)}
+                >
+                  <option value={sessionId}>{sessionId}</option>
+                  {chatSessions
+                    .filter((item) => item.sessionId !== sessionId)
+                    .map((item) => (
+                      <option key={item.sessionId} value={item.sessionId}>
+                        {item.sessionId}
+                      </option>
+                    ))}
+                </select>
               </div>
               <div className="flex items-center gap-1">
-                <Button size="icon" variant="ghost" className="cursor-pointer" title="会话">
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="cursor-pointer"
+                  title="刷新会话"
+                  onClick={() => token && projectId && void loadChatSessions(token, projectId, canvasName)}
+                >
                   <MessageSquareText />
+                </Button>
+                <Button size="icon" variant="ghost" className="cursor-pointer" title="新会话" onClick={() => void createNewChatSession()}>
+                  <Plus />
                 </Button>
                 <Button
                   size="icon"
@@ -867,6 +1225,8 @@ export default function WorkspacePage() {
           </CardHeader>
           <CardContent className="flex min-h-0 flex-1 flex-col gap-3 p-3">
             <div className="flex min-h-0 flex-1 flex-col overflow-y-auto pr-1">
+              {sessionListLoading ? <p className="pb-3 text-xs text-black/50">会话列表加载中...</p> : null}
+              {chatHistoryLoading ? <p className="pb-3 text-xs text-black/50">会话记录加载中...</p> : null}
               {messages.map((item, index) => (
                 <div key={`${item.role}-${index}`} className="flex gap-3 pb-3 last:pb-0">
 
