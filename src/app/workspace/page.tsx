@@ -808,6 +808,14 @@ export default function WorkspacePage() {
 
   function zoomAtPoint(event: React.WheelEvent<HTMLDivElement>) {
     event.preventDefault()
+    const isZoomGesture = event.ctrlKey || event.metaKey
+    if (!isZoomGesture) {
+      setOffset((prev) => ({
+        x: prev.x + event.deltaX / scale,
+        y: prev.y + event.deltaY / scale,
+      }))
+      return
+    }
     const rect = viewportRef.current?.getBoundingClientRect()
     if (!rect) {
       return
