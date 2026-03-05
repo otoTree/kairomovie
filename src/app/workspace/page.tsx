@@ -17,6 +17,7 @@ import {
 } from "lucide-react"
 import { MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
+import { upload } from "@vercel/blob/client"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -76,6 +77,7 @@ type Message = {
 type CreateArtifactResponse = {
   artifact: {
     id: string
+    objectKey: string
   }
   upload: {
     url: string
@@ -546,20 +548,22 @@ export default function WorkspacePage() {
           },
           token
         )
-        const formData = new FormData()
-        formData.set("projectId", projectId)
-        formData.set("artifactId", created.artifact.id)
-        formData.set("file", file, file.name)
-        const uploaded = await fetch("/api/v1/storage/artifacts/upload", {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${token}`,
-          },
-          body: formData,
-        })
-        if (!uploaded.ok) {
-          const payload = await uploaded.json().catch(() => null)
-          const message = payload?.message ? String(payload.message) : "上传失败"
+        try {
+          await upload(created.artifact.objectKey, file, {
+            access: "public",
+            handleUploadUrl: "/api/v1/storage/artifacts/upload",
+            multipart: file.size > 5 * 1024 * 1024,
+            contentType: file.type || undefined,
+            headers: {
+              authorization: `Bearer ${token}`,
+            },
+            clientPayload: JSON.stringify({
+              projectId,
+              artifactId: created.artifact.id,
+            }),
+          })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "上传失败"
           await requestJson(
             "/api/v1/storage/artifacts",
             {

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
+import { upload } from "@vercel/blob/client"
 import {
   ArrowDownUp,
   CheckSquare,
@@ -61,6 +62,7 @@ type ArtifactListResponse = {
 type CreateArtifactResponse = {
   artifact: {
     id: string
+    objectKey: string
   }
   upload: {
     url: string
@@ -341,25 +343,22 @@ export default function AssetsPage() {
           },
           token
         )
-        const uploadViaRelay = async () => {
-          const formData = new FormData()
-          formData.set("projectId", projectId)
-          formData.set("artifactId", created.artifact.id)
-          formData.set("file", file, file.name)
-          const response = await fetch("/api/v1/storage/artifacts/upload", {
-            method: "POST",
-            headers: {
-              authorization: `Bearer ${token}`,
-            },
-            body: formData,
-          })
-          if (!response.ok) {
-            const payload = await response.json().catch(() => null)
-            const message = payload?.message ? String(payload.message) : "上传失败"
-            throw new Error(`${message}：${file.name}`)
-          }
-        }
-        await uploadViaRelay()
+        await upload(created.artifact.objectKey, file, {
+          access: "public",
+          handleUploadUrl: "/api/v1/storage/artifacts/upload",
+          multipart: file.size > 5 * 1024 * 1024,
+          contentType: file.type || undefined,
+          headers: {
+            authorization: `Bearer ${token}`,
+          },
+          clientPayload: JSON.stringify({
+            projectId,
+            artifactId: created.artifact.id,
+          }),
+        }).catch((error) => {
+          const message = error instanceof Error ? error.message : "上传失败"
+          throw new Error(`${message}：${file.name}`)
+        })
         await requestJson(
           "/api/v1/storage/artifacts",
           {

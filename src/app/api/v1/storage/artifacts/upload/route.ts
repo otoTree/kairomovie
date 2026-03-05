@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm"
 import { NextResponse } from "next/server"
-import { put } from "@vercel/blob"
+import { handleUpload, type HandleUploadBody } from "@vercel/blob/client"
 import { db } from "@/db"
 import { apiArtifacts } from "@/db/schema"
 import { getAuthUserFromAuthorizationHeader } from "@/lib/api-auth"
@@ -8,74 +8,166 @@ import { getAppEnv } from "@/lib/env"
 
 export const runtime = "nodejs"
 
+type UploadClientPayload = {
+  projectId: string
+  artifactId: string
+}
+
+type UploadTokenPayload = UploadClientPayload & {
+  userId: string
+}
+
+function parseUploadClientPayload(raw: string | null): UploadClientPayload | null {
+  if (!raw) {
+    return null
+  }
+  const parsed = JSON.parse(raw) as unknown
+  if (!parsed || typeof parsed !== "object") {
+    return null
+  }
+  const record = parsed as Record<string, unknown>
+  const projectId = typeof record.projectId === "string" ? record.projectId.trim() : ""
+  const artifactId = typeof record.artifactId === "string" ? record.artifactId.trim() : ""
+  if (!projectId || !artifactId) {
+    return null
+  }
+  return { projectId, artifactId }
+}
+
+function parseUploadTokenPayload(raw: string | null | undefined): UploadTokenPayload | null {
+  if (!raw) {
+    return null
+  }
+  const parsed = JSON.parse(raw) as unknown
+  if (!parsed || typeof parsed !== "object") {
+    return null
+  }
+  const record = parsed as Record<string, unknown>
+  const userId = typeof record.userId === "string" ? record.userId.trim() : ""
+  const projectId = typeof record.projectId === "string" ? record.projectId.trim() : ""
+  const artifactId = typeof record.artifactId === "string" ? record.artifactId.trim() : ""
+  if (!userId || !projectId || !artifactId) {
+    return null
+  }
+  return { userId, projectId, artifactId }
+}
+
 export async function POST(request: Request) {
-  const user = await getAuthUserFromAuthorizationHeader(request.headers.get("authorization"))
-  if (!user) {
-    return NextResponse.json({ message: "未授权" }, { status: 401 })
-  }
-
-  const formData = await request.formData().catch(() => null)
-  if (!formData) {
-    return NextResponse.json({ message: "请求参数无效" }, { status: 400 })
-  }
-
-  const projectId = formData.get("projectId")
-  const artifactId = formData.get("artifactId")
-  const file = formData.get("file")
-
-  if (typeof projectId !== "string" || !projectId.trim()) {
-    return NextResponse.json({ message: "projectId 不能为空" }, { status: 400 })
-  }
-  if (typeof artifactId !== "string" || !artifactId.trim()) {
-    return NextResponse.json({ message: "artifactId 不能为空" }, { status: 400 })
-  }
-  if (!(file instanceof File)) {
-    return NextResponse.json({ message: "file 不能为空" }, { status: 400 })
-  }
-
   const env = getAppEnv()
   if (!env.blobReadWriteToken) {
     return NextResponse.json({ message: "对象存储未配置" }, { status: 400 })
   }
 
-  const [artifact] = await db
-    .select({
-      id: apiArtifacts.id,
-      objectKey: apiArtifacts.objectKey,
-      metadata: apiArtifacts.metadata,
-      mimeType: apiArtifacts.mimeType,
-    })
-    .from(apiArtifacts)
-    .where(and(eq(apiArtifacts.id, artifactId), eq(apiArtifacts.projectId, projectId), eq(apiArtifacts.userId, user.id)))
-    .limit(1)
-
-  if (!artifact) {
-    return NextResponse.json({ message: "文件不存在或无权限" }, { status: 404 })
+  const body = (await request.json().catch(() => null)) as HandleUploadBody | null
+  if (!body) {
+    return NextResponse.json({ message: "请求参数无效" }, { status: 400 })
   }
 
-  const uploaded = await put(artifact.objectKey, file, {
-    token: env.blobReadWriteToken,
-    access: "public",
-    addRandomSuffix: false,
-    contentType: file.type || artifact.mimeType || "application/octet-stream",
-  })
+  try {
+    const jsonResponse = await handleUpload({
+      token: env.blobReadWriteToken,
+      request,
+      body,
+      onBeforeGenerateToken: async (pathname, clientPayload) => {
+        const user = await getAuthUserFromAuthorizationHeader(request.headers.get("authorization"))
+        if (!user) {
+          throw new Error("未授权")
+        }
+        const payload = parseUploadClientPayload(clientPayload)
+        if (!payload) {
+          throw new Error("请求参数无效")
+        }
 
-  const currentMetadata =
-    artifact.metadata && typeof artifact.metadata === "object" && !Array.isArray(artifact.metadata)
-      ? (artifact.metadata as Record<string, unknown>)
-      : {}
-  const mergedMetadata = {
-    ...currentMetadata,
-    blobUrl: uploaded.url,
-  }
+        const [artifact] = await db
+          .select({
+            id: apiArtifacts.id,
+            objectKey: apiArtifacts.objectKey,
+            mimeType: apiArtifacts.mimeType,
+          })
+          .from(apiArtifacts)
+          .where(
+            and(
+              eq(apiArtifacts.id, payload.artifactId),
+              eq(apiArtifacts.projectId, payload.projectId),
+              eq(apiArtifacts.userId, user.id)
+            )
+          )
+          .limit(1)
 
-  await db
-    .update(apiArtifacts)
-    .set({
-      metadata: mergedMetadata,
-      updatedAt: new Date(),
+        if (!artifact) {
+          throw new Error("文件不存在或无权限")
+        }
+        if (pathname !== artifact.objectKey) {
+          throw new Error("上传路径不匹配")
+        }
+
+        return {
+          addRandomSuffix: false,
+          allowOverwrite: true,
+          maximumSizeInBytes: 1024 * 1024 * 1024,
+          tokenPayload: JSON.stringify({
+            userId: user.id,
+            projectId: payload.projectId,
+            artifactId: payload.artifactId,
+          }),
+          allowedContentTypes: artifact.mimeType ? [artifact.mimeType] : undefined,
+        }
+      },
+      onUploadCompleted: async ({ blob, tokenPayload }) => {
+        const payload = parseUploadTokenPayload(tokenPayload)
+        if (!payload) {
+          throw new Error("上传回调参数无效")
+        }
+
+        const [artifact] = await db
+          .select({
+            id: apiArtifacts.id,
+            metadata: apiArtifacts.metadata,
+            mimeType: apiArtifacts.mimeType,
+          })
+          .from(apiArtifacts)
+          .where(
+            and(
+              eq(apiArtifacts.id, payload.artifactId),
+              eq(apiArtifacts.projectId, payload.projectId),
+              eq(apiArtifacts.userId, payload.userId)
+            )
+          )
+          .limit(1)
+
+        if (!artifact) {
+          throw new Error("文件不存在或无权限")
+        }
+
+        const currentMetadata =
+          artifact.metadata && typeof artifact.metadata === "object" && !Array.isArray(artifact.metadata)
+            ? (artifact.metadata as Record<string, unknown>)
+            : {}
+        const mergedMetadata = {
+          ...currentMetadata,
+          blobUrl: blob.url,
+        }
+
+        await db
+          .update(apiArtifacts)
+          .set({
+            metadata: mergedMetadata,
+            mimeType: blob.contentType || artifact.mimeType,
+            status: "uploaded",
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(apiArtifacts.id, payload.artifactId),
+              eq(apiArtifacts.projectId, payload.projectId),
+              eq(apiArtifacts.userId, payload.userId)
+            )
+          )
+      },
     })
-    .where(and(eq(apiArtifacts.id, artifactId), eq(apiArtifacts.projectId, projectId), eq(apiArtifacts.userId, user.id)))
 
-  return NextResponse.json({ ok: true })
+    return NextResponse.json(jsonResponse)
+  } catch (error) {
+    return NextResponse.json({ message: error instanceof Error ? error.message : "上传失败" }, { status: 400 })
+  }
 }
