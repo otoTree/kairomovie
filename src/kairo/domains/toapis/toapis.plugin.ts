@@ -88,7 +88,6 @@ export class ToAPIsPlugin implements Plugin {
             kind: { type: "string", enum: ["image", "video", "speech", "transcription"] },
             prompt: { type: "string" },
             text: { type: "string" },
-            model: { type: "string" },
             size: { type: "string" },
             n: { type: "number" },
             voice: { type: "string" },
@@ -118,7 +117,7 @@ export class ToAPIsPlugin implements Plugin {
 
         if (kind === "image") {
           const prompt = readString(args, "prompt");
-          const model = readOptionalString(args, "model") || process.env.TOAPIS_IMAGE_MODEL_NAME || "nano-banana-2";
+          const model = process.env.TOAPIS_IMAGE_MODEL_NAME || "nano-banana-2";
           const n = readOptionalNumber(args, "n");
           const size = readOptionalString(args, "size");
 
@@ -148,7 +147,7 @@ export class ToAPIsPlugin implements Plugin {
 
         if (kind === "speech") {
           const text = readString(args, "text");
-          const model = readOptionalString(args, "model") || process.env.TOAPIS_TTS_MODEL_NAME || "tts-1";
+          const model = process.env.TOAPIS_TTS_MODEL_NAME || "tts-1";
           const voice = readOptionalString(args, "voice") || process.env.TOAPIS_TTS_VOICE || "alloy";
           const responseFormat = readOptionalString(args, "responseFormat") || "mp3";
 
@@ -187,7 +186,7 @@ export class ToAPIsPlugin implements Plugin {
           const audioBase64 = readString(args, "audioBase64");
           const audioFilename = readOptionalString(args, "audioFilename") || "audio.wav";
           const audioContentType = readOptionalString(args, "audioContentType") || "audio/wav";
-          const model = readOptionalString(args, "model") || process.env.TOAPIS_STT_MODEL_NAME || "whisper-1";
+          const model = process.env.TOAPIS_STT_MODEL_NAME || "whisper-1";
 
           const bytes = Buffer.from(audioBase64, "base64");
           const file = new Blob([bytes], { type: audioContentType });
@@ -221,7 +220,7 @@ export class ToAPIsPlugin implements Plugin {
         }
 
         const prompt = readString(args, "prompt");
-        const model = readOptionalString(args, "model") || process.env.TOAPIS_VIDEO_MODEL_NAME || "sora2";
+        const model = process.env.TOAPIS_VIDEO_MODEL_NAME || "sora2";
         const webhook = readOptionalString(args, "webhook");
         const taskId = randomUUID();
 

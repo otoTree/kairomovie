@@ -173,28 +173,19 @@ export class NextKairoRuntime {
   private async executeChat(input: ChatInput, onEvent?: ChatEventHandler): Promise<ChatOutput> {
     await this.start()
     const timeoutMs = input.timeoutMs ?? 30000
+    const correlationId = input.correlationId || randomUUID()
+    const traceId = input.traceId || correlationId
+    const spanId = input.spanId || randomUUID()
     const thoughts: string[] = []
     const messages: string[] = []
     const events: KairoEvent[] = []
+    const actionTypeByEventId = new Map<string, string>()
 
     let resolveDone: (() => void) | null = null
     let rejectDone: ((error: Error) => void) | null = null
     const done = new Promise<void>((resolve, reject) => {
       resolveDone = resolve
       rejectDone = reject
-    })
-
-    const { eventId: triggerEventId, correlationId, traceId, spanId } = await this.sendUserMessage({
-      prompt: input.prompt,
-      targetAgentId: input.targetAgentId,
-      userId: input.userId,
-      projectId: input.projectId,
-      canvasId: input.canvasId,
-      canvasName: input.canvasName,
-      correlationId: input.correlationId,
-      causationId: input.causationId,
-      traceId: input.traceId,
-      spanId: input.spanId,
     })
 
     const unsubscribe = this.agent.globalBus.subscribe("kairo.>", (event) => {
@@ -213,13 +204,34 @@ export class NextKairoRuntime {
       }
       if (event.type === "kairo.agent.action") {
         const action = (event.data as { action?: { type?: string; content?: string } }).action
+        if (event.id && action?.type) {
+          actionTypeByEventId.set(event.id, action.type)
+        }
         if (action?.type && (action.type === "say" || action.type === "query") && action.content) {
           messages.push(action.content)
         }
       }
       if (event.type === "kairo.intent.ended") {
+        const endedByActionId = typeof event.causationId === "string" ? event.causationId : ""
+        const endedByActionType = endedByActionId ? actionTypeByEventId.get(endedByActionId) : ""
+        if (endedByActionType === "tool_call") {
+          return
+        }
         resolveDone?.()
       }
+    })
+
+    const { eventId: triggerEventId } = await this.sendUserMessage({
+      prompt: input.prompt,
+      targetAgentId: input.targetAgentId,
+      userId: input.userId,
+      projectId: input.projectId,
+      canvasId: input.canvasId,
+      canvasName: input.canvasName,
+      correlationId,
+      causationId: input.causationId,
+      traceId,
+      spanId,
     })
 
     const timer = setTimeout(() => {
