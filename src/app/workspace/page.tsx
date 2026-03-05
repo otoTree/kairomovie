@@ -234,6 +234,60 @@ function buildNodeChatPromptBlock(node: CanvasNode, index: number) {
   return `节点${index + 1}（${node.type}）\n标题: ${title}\n核心元信息: ${content || "无"}\n文本内容: ${text || "无"}\n资源链接: ${src || "无"}`
 }
 
+function formatTaskOrMediaMessage(type: string, data: Record<string, unknown>) {
+  const kind = toText(data.kind)
+  const model = toText(data.model)
+  const status = toText(data.providerStatus) || toText(data.status)
+  const message = toText(data.message) || toText(data.error)
+  const progressRaw = data.progress
+  const progress =
+    typeof progressRaw === "number"
+      ? progressRaw
+      : typeof progressRaw === "string"
+        ? Number(progressRaw)
+        : Number.NaN
+  const resultRecord = toRecord(data.result)
+  const images = Array.isArray(data.images)
+    ? data.images.length
+    : Array.isArray(resultRecord?.images)
+      ? resultRecord.images.length
+      : 0
+  const videos = Array.isArray(data.videos)
+    ? data.videos.length
+    : Array.isArray(resultRecord?.videos)
+      ? resultRecord.videos.length
+      : 0
+  const taskLabel = `${kind || "任务"}${model ? ` (${model})` : ""}`
+
+  if (type === "kairo.task.started") {
+    return `任务已开始: ${taskLabel}`
+  }
+  if (type === "kairo.task.updated") {
+    if (Number.isFinite(progress)) {
+      return `任务进度: ${Math.round(progress)}%`
+    }
+    if (status) {
+      return `任务状态: ${status}`
+    }
+    return `任务状态更新: ${taskLabel}`
+  }
+  if (type === "kairo.task.completed") {
+    if (videos > 0) return `任务完成: 已生成 ${videos} 个视频`
+    if (images > 0) return `任务完成: 已生成 ${images} 张图片`
+    return `任务已完成: ${taskLabel}`
+  }
+  if (type === "kairo.task.failed") {
+    if (message) return `任务失败: ${message}`
+    return `任务失败: ${taskLabel}`
+  }
+  if (type === "kairo.tool.media.completed") {
+    if (videos > 0) return `媒体生成完成: ${videos} 个视频`
+    if (images > 0) return `媒体生成完成: ${images} 张图片`
+    return "媒体生成完成"
+  }
+  return ""
+}
+
 function extractMessagesFromEvents(items: EventItem[]): Message[] {
   const ordered = [...items].sort((a, b) => {
     const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0
@@ -255,8 +309,24 @@ function extractMessagesFromEvents(items: EventItem[]): Message[] {
       if (typeof action === "object" && action !== null) {
         const actionRecord = action as Record<string, unknown>
         const actionType = toText(actionRecord.type)
-        const content = toText(actionRecord.content)
-        if ((actionType === "say" || actionType === "query") && content) {
+        const contentCandidates = [
+          actionRecord.content,
+          actionRecord.message,
+          actionRecord.text,
+          actionRecord.reply,
+          actionRecord.response,
+        ]
+        let content = ""
+        for (const candidate of contentCandidates) {
+          const value = toText(candidate)
+          if (value) {
+            content = value
+            break
+          }
+        }
+        if ((actionType === "say" || actionType === "query" || actionType === "speak" || actionType === "reply") && content) {
+          lines.push({ role: "assistant", text: content, createdAt: event.createdAt })
+        } else if (content && (!actionType || actionType === "message")) {
           lines.push({ role: "assistant", text: content, createdAt: event.createdAt })
         } else if (actionType) {
           lines.push({ role: "event", text: `动作: ${actionType}`, createdAt: event.createdAt })
@@ -291,6 +361,11 @@ function extractMessagesFromEvents(items: EventItem[]): Message[] {
       } else {
         lines.push({ role: "event", text: "处理完成", createdAt: event.createdAt })
       }
+      continue
+    }
+    const taskOrMediaText = formatTaskOrMediaMessage(event.type, data)
+    if (taskOrMediaText) {
+      lines.push({ role: "event", text: taskOrMediaText, createdAt: event.createdAt })
       continue
     }
   }
@@ -462,8 +537,10 @@ export default function WorkspacePage() {
           authToken
         )
         setChatSessions(result.items)
+        return result.items
       } catch (error) {
         setMessage(toErrorMessage(error))
+        return []
       } finally {
         setSessionListLoading(false)
       }
@@ -512,12 +589,18 @@ export default function WorkspacePage() {
       setScale(canvas.snapshot.scale)
       setOffset(canvas.snapshot.offset)
       setCanvasName(canvas.snapshot.canvasName || canvas.name)
-      const nextSessionId = canvas.sessionId || createChatSessionId(canvas.snapshot.canvasName || canvas.name)
+      const defaultSessionId = canvas.sessionId || createChatSessionId(canvas.snapshot.canvasName || canvas.name)
+      const savedSessionId =
+        typeof window !== "undefined" ? window.localStorage.getItem(SESSION_STORAGE_KEY)?.trim() || "" : ""
+      const sessions = await loadChatSessions(authToken, nextProjectId, canvas.snapshot.canvasName || canvas.name)
+      const availableSessionIds = new Set(sessions.map((item) => item.sessionId))
+      const nextSessionId =
+        (savedSessionId && availableSessionIds.has(savedSessionId) && savedSessionId) ||
+        (availableSessionIds.has(defaultSessionId) && defaultSessionId) ||
+        sessions[0]?.sessionId ||
+        defaultSessionId
       setSessionId(nextSessionId)
-      await Promise.all([
-        loadChatSessions(authToken, nextProjectId, canvas.snapshot.canvasName || canvas.name),
-        loadChatHistory(authToken, nextProjectId, nextSessionId),
-      ])
+      await loadChatHistory(authToken, nextProjectId, nextSessionId)
     },
     [loadChatHistory, loadChatSessions]
   )
@@ -1077,7 +1160,7 @@ export default function WorkspacePage() {
           prompt,
           waitForResult: true,
           streamEvents: true,
-          timeoutMs: 90000,
+          timeoutMs: 1800000,
         }),
       })
       if (!response.ok) {
@@ -1107,12 +1190,58 @@ export default function WorkspacePage() {
         }
         const decoder = new TextDecoder()
         let buffer = ""
+        const processChunk = (chunk: string) => {
+          const lines = chunk.split("\n")
+          let eventName = "message"
+          const dataLines: string[] = []
+          for (const line of lines) {
+            if (line.startsWith("event:")) {
+              const value = line.slice(6)
+              eventName = value.startsWith(" ") ? value.slice(1).trim() : value.trim()
+              continue
+            }
+            if (line.startsWith("data:")) {
+              const value = line.slice(5)
+              dataLines.push(value.startsWith(" ") ? value.slice(1) : value)
+            }
+          }
+          if (dataLines.length === 0) {
+            return
+          }
+          const payloadText = dataLines.join("\n")
+          const payload = JSON.parse(payloadText) as unknown
+          if (eventName === "kairo_event") {
+            const eventRecord = toRecord(payload)
+            if (!eventRecord) {
+              return
+            }
+            const id = typeof eventRecord.id === "string" ? eventRecord.id : ""
+            const type = typeof eventRecord.type === "string" ? eventRecord.type : ""
+            if (!id || !type) {
+              return
+            }
+            const eventData = toRecord(eventRecord.data) || {}
+            const createdAt = typeof eventRecord.time === "string" ? eventRecord.time : undefined
+            applyRuntimeEvent({
+              id,
+              type,
+              data: eventData,
+              createdAt,
+            })
+            return
+          }
+          if (eventName === "error") {
+            const errorRecord = toRecord(payload)
+            const reason = typeof errorRecord?.message === "string" ? errorRecord.message : "会话执行失败"
+            throw new Error(reason)
+          }
+        }
         while (true) {
           const { done, value } = await reader.read()
           if (done) {
             break
           }
-          buffer += decoder.decode(value, { stream: true })
+          buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n")
           while (true) {
             const boundary = buffer.indexOf("\n\n")
             if (boundary === -1) {
@@ -1120,49 +1249,13 @@ export default function WorkspacePage() {
             }
             const chunk = buffer.slice(0, boundary)
             buffer = buffer.slice(boundary + 2)
-            const lines = chunk.split("\n")
-            let eventName = "message"
-            const dataLines: string[] = []
-            for (const line of lines) {
-              if (line.startsWith("event:")) {
-                eventName = line.slice(6).trim()
-                continue
-              }
-              if (line.startsWith("data:")) {
-                dataLines.push(line.slice(5).trim())
-              }
-            }
-            if (dataLines.length === 0) {
-              continue
-            }
-            const payloadText = dataLines.join("\n")
-            const payload = JSON.parse(payloadText) as unknown
-            if (eventName === "kairo_event") {
-              const eventRecord = toRecord(payload)
-              if (!eventRecord) {
-                continue
-              }
-              const id = typeof eventRecord.id === "string" ? eventRecord.id : ""
-              const type = typeof eventRecord.type === "string" ? eventRecord.type : ""
-              if (!id || !type) {
-                continue
-              }
-              const eventData = toRecord(eventRecord.data) || {}
-              const createdAt = typeof eventRecord.time === "string" ? eventRecord.time : undefined
-              applyRuntimeEvent({
-                id,
-                type,
-                data: eventData,
-                createdAt,
-              })
-              continue
-            }
-            if (eventName === "error") {
-              const errorRecord = toRecord(payload)
-              const reason = typeof errorRecord?.message === "string" ? errorRecord.message : "会话执行失败"
-              throw new Error(reason)
-            }
+            processChunk(chunk)
           }
+        }
+        buffer += decoder.decode().replace(/\r\n/g, "\n")
+        const finalChunk = buffer.trim()
+        if (finalChunk) {
+          processChunk(finalChunk)
         }
       }
       if (!hasDisplayMessage) {

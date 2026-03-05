@@ -3,6 +3,11 @@ import type { Application } from "../../core/app";
 import type { AgentPlugin } from "../agent/agent.plugin";
 import { getAppEnv } from "../../../lib/env";
 import { randomUUID } from "crypto";
+import { db } from "../../../db";
+import { apiArtifacts } from "../../../db/schema";
+import { ensureCloudTables } from "../../../db/ensure-cloud-tables";
+import { createStorageProvider } from "../../../lib/storage-provider";
+import { getProjectArtifactKey } from "../../../lib/storage-keys";
 
 type MediaKind = "image" | "video" | "speech" | "transcription";
 
@@ -67,6 +72,12 @@ function readKind(record: Record<string, unknown>): MediaKind {
     throw new Error("参数 kind 无效");
   }
   return kind;
+}
+
+function normalizeModelName(value: string | undefined) {
+  if (!value) return undefined;
+  const normalized = value.trim().replace(/^['"`]+|['"`]+$/g, "").trim();
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 function baseUrlJoin(baseUrl: string, path: string) {
@@ -219,6 +230,180 @@ function pickVideos(result: Record<string, unknown>) {
   return videos;
 }
 
+type PersistedMediaItem = {
+  url: string;
+  objectKey?: string;
+  sourceUrl?: string;
+  mimeType?: string;
+  size?: number;
+};
+
+function toSafeSegment(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\u4e00-\u9fa5_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 64) || "default";
+}
+
+function inferExtensionFromContentType(contentType: string | null | undefined) {
+  const normalized = (contentType || "").toLowerCase().split(";")[0].trim();
+  if (normalized === "image/png") return "png";
+  if (normalized === "image/jpeg") return "jpg";
+  if (normalized === "image/webp") return "webp";
+  if (normalized === "image/gif") return "gif";
+  if (normalized === "image/avif") return "avif";
+  if (normalized === "video/mp4") return "mp4";
+  if (normalized === "video/webm") return "webm";
+  if (normalized === "video/quicktime") return "mov";
+  return "";
+}
+
+function inferExtensionFromUrl(rawUrl: string) {
+  try {
+    const url = new URL(rawUrl);
+    const pathname = url.pathname || "";
+    const last = pathname.split("/").pop() || "";
+    const match = last.match(/\.([a-zA-Z0-9]{2,6})$/);
+    if (!match) return "";
+    return match[1]!.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+async function persistMediaArtifacts(input: {
+  userId?: string;
+  projectId?: string;
+  canvasName?: string;
+  kind: "image" | "video";
+  model: string;
+  taskId: string;
+  providerTaskId?: string;
+  items: Array<{ url?: string; base64?: string }>;
+}) {
+  if (!input.userId || !input.projectId || input.items.length === 0) {
+    return input.items
+      .map((item) => {
+        if (typeof item.url === "string" && item.url.trim().length > 0) {
+          return { url: item.url.trim() } satisfies PersistedMediaItem;
+        }
+        return null;
+      })
+      .filter((item): item is PersistedMediaItem => Boolean(item));
+  }
+
+  await ensureCloudTables();
+  const storage = createStorageProvider();
+  const taskSegment = toSafeSegment(
+    `toapis-${input.kind}-${input.providerTaskId || input.taskId || randomUUID()}`
+  );
+  const persisted: PersistedMediaItem[] = [];
+
+  for (let index = 0; index < input.items.length; index += 1) {
+    const item = input.items[index]!;
+    try {
+      let bytes: Uint8Array | null = null;
+      let sourceUrl = "";
+      let contentType = "";
+      if (typeof item.url === "string" && item.url.trim().length > 0) {
+        sourceUrl = item.url.trim();
+        const response = await fetch(sourceUrl);
+        if (!response.ok) {
+          throw new Error(`媒体下载失败 (${response.status})`);
+        }
+        bytes = new Uint8Array(await response.arrayBuffer());
+        contentType = response.headers.get("content-type") || "";
+      } else if (typeof item.base64 === "string" && item.base64.trim().length > 0) {
+        bytes = new Uint8Array(Buffer.from(item.base64, "base64"));
+        contentType = input.kind === "image" ? "image/png" : "application/octet-stream";
+      }
+      if (!bytes || bytes.byteLength === 0) {
+        continue;
+      }
+
+      const ext =
+        inferExtensionFromContentType(contentType) ||
+        inferExtensionFromUrl(sourceUrl) ||
+        (input.kind === "video" ? "mp4" : "png");
+      const fileName = `${input.kind}-${String(index + 1).padStart(2, "0")}.${ext}`;
+      const relativePath = input.canvasName
+        ? `${toSafeSegment(input.canvasName)}/${fileName}`
+        : fileName;
+      const objectKey = getProjectArtifactKey(input.projectId, taskSegment, relativePath);
+
+      await storage.put({
+        key: objectKey,
+        body: bytes,
+        contentType: contentType || undefined,
+      });
+      const publicUrl = await storage.getUrl(objectKey).catch(() => null);
+      const now = new Date();
+
+      await db
+        .insert(apiArtifacts)
+        .values({
+          userId: input.userId,
+          projectId: input.projectId,
+          taskId: taskSegment,
+          provider: "toapis",
+          kind: input.kind,
+          objectKey,
+          fileName,
+          mimeType: contentType || null,
+          size: bytes.byteLength,
+          status: "uploaded",
+          metadata: {
+            source: "toapis",
+            model: input.model,
+            sourceUrl: sourceUrl || null,
+            canvasName: input.canvasName || null,
+            providerTaskId: input.providerTaskId || null,
+          },
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [apiArtifacts.projectId, apiArtifacts.taskId, apiArtifacts.objectKey],
+          set: {
+            provider: "toapis",
+            kind: input.kind,
+            fileName,
+            mimeType: contentType || null,
+            size: bytes.byteLength,
+            status: "uploaded",
+            metadata: {
+              source: "toapis",
+              model: input.model,
+              sourceUrl: sourceUrl || null,
+              canvasName: input.canvasName || null,
+              providerTaskId: input.providerTaskId || null,
+            },
+            updatedAt: now,
+          },
+        });
+
+      persisted.push({
+        url: publicUrl?.url || sourceUrl,
+        objectKey,
+        sourceUrl: sourceUrl || undefined,
+        mimeType: contentType || undefined,
+        size: bytes.byteLength,
+      });
+    } catch {
+      if (typeof item.url === "string" && item.url.trim().length > 0) {
+        persisted.push({
+          url: item.url.trim(),
+        });
+      }
+    }
+  }
+
+  return persisted;
+}
+
 export class ToAPIsPlugin implements Plugin {
   readonly name = "toapis";
   private app?: Application;
@@ -244,7 +429,6 @@ export class ToAPIsPlugin implements Plugin {
             kind: { type: "string", enum: ["image", "video", "speech", "transcription"] },
             prompt: { type: "string" },
             text: { type: "string" },
-            model: { type: "string" },
             size: { type: "string" },
             n: { type: "number" },
             duration: { type: "number" },
@@ -278,10 +462,12 @@ export class ToAPIsPlugin implements Plugin {
 
         const kind = readKind(args);
         const correlationId = context?.correlationId || randomUUID();
+        console.log("[ToAPIs] kind:", kind);
 
         if (kind === "image") {
           const prompt = readString(args, "prompt");
-          const model = readOptionalString(args, "model") || process.env.TOAPIS_IMAGE_MODEL_NAME || "nano-banana-2";
+          const model = normalizeModelName(process.env.TOAPIS_IMAGE_MODEL_NAME) ||
+            "nano-banana-2";
           const n = readOptionalNumber(args, "n");
           const size = readOptionalString(args, "size");
           const imageUrls = readOptionalStringArray(args, "imageUrls");
@@ -393,6 +579,16 @@ export class ToAPIsPlugin implements Plugin {
           }
 
           const images = pickImages(finalResult);
+          const persistedImages = await persistMediaArtifacts({
+            userId: typeof context?.userId === "string" ? context.userId : undefined,
+            projectId: typeof context?.projectId === "string" ? context.projectId : undefined,
+            canvasName: typeof context?.canvasName === "string" ? context.canvasName : undefined,
+            kind: "image",
+            model,
+            taskId,
+            providerTaskId,
+            items: images,
+          });
           if (finalStatus === "failed") {
             const message = pickTaskError(finalResult) || "图像任务失败";
             await agent.globalBus.publish({
@@ -413,7 +609,7 @@ export class ToAPIsPlugin implements Plugin {
             throw new Error(`ToAPIs 图像任务失败: ${message}`);
           }
 
-          if (finalStatus !== "completed" && images.length === 0) {
+          if (finalStatus !== "completed" && persistedImages.length === 0) {
             await agent.globalBus.publish({
               type: "kairo.task.failed",
               source: "tool:toapis",
@@ -432,11 +628,11 @@ export class ToAPIsPlugin implements Plugin {
             throw new Error("ToAPIs 图像任务轮询超时");
           }
 
-          if (images.length > 0) {
+          if (persistedImages.length > 0) {
             await agent.globalBus.publish({
               type: "kairo.tool.media.completed",
               source: "tool:toapis",
-              data: { kind, model, images },
+              data: { kind, model, images: persistedImages },
               correlationId,
             });
             await agent.globalBus.publish({
@@ -449,7 +645,7 @@ export class ToAPIsPlugin implements Plugin {
                 kind,
                 model,
                 status: "completed",
-                result: { images },
+                result: { images: persistedImages },
               },
               correlationId,
             });
@@ -463,14 +659,14 @@ export class ToAPIsPlugin implements Plugin {
             providerStatus: finalStatus,
             submitted: true,
             completed: true,
-            images,
+            images: persistedImages,
             result: finalResult,
           };
         }
 
         if (kind === "speech") {
           const text = readString(args, "text");
-          const model = process.env.TOAPIS_TTS_MODEL_NAME || "tts-1";
+          const model = normalizeModelName(process.env.TOAPIS_TTS_MODEL_NAME) || "tts-1";
           const voice = readOptionalString(args, "voice") || process.env.TOAPIS_TTS_VOICE || "alloy";
           const responseFormat = readOptionalString(args, "responseFormat") || "mp3";
 
@@ -509,7 +705,7 @@ export class ToAPIsPlugin implements Plugin {
           const audioBase64 = readString(args, "audioBase64");
           const audioFilename = readOptionalString(args, "audioFilename") || "audio.wav";
           const audioContentType = readOptionalString(args, "audioContentType") || "audio/wav";
-          const model = process.env.TOAPIS_STT_MODEL_NAME || "whisper-1";
+          const model = normalizeModelName(process.env.TOAPIS_STT_MODEL_NAME) || "whisper-1";
 
           const bytes = Buffer.from(audioBase64, "base64");
           const file = new Blob([bytes], { type: audioContentType });
@@ -543,7 +739,8 @@ export class ToAPIsPlugin implements Plugin {
         }
 
         const prompt = readString(args, "prompt");
-        const model = readOptionalString(args, "model") || process.env.TOAPIS_VIDEO_MODEL_NAME || "sora2";
+        const model = normalizeModelName(process.env.TOAPIS_VIDEO_MODEL_NAME) ||
+          "sora-2";
         const duration = readOptionalNumber(args, "duration");
         const aspectRatio = readOptionalString(args, "aspectRatio");
         const imageUrls = readOptionalStringArray(args, "imageUrls");
@@ -653,6 +850,16 @@ export class ToAPIsPlugin implements Plugin {
         }
 
         const videos = pickVideos(finalResult);
+        const persistedVideos = await persistMediaArtifacts({
+          userId: typeof context?.userId === "string" ? context.userId : undefined,
+          projectId: typeof context?.projectId === "string" ? context.projectId : undefined,
+          canvasName: typeof context?.canvasName === "string" ? context.canvasName : undefined,
+          kind: "video",
+          model,
+          taskId,
+          providerTaskId,
+          items: videos,
+        });
         if (finalStatus === "failed") {
           const message = pickTaskError(finalResult) || "视频任务失败";
           await agent.globalBus.publish({
@@ -673,7 +880,7 @@ export class ToAPIsPlugin implements Plugin {
           throw new Error(`ToAPIs 视频任务失败: ${message}`);
         }
 
-        if (finalStatus !== "completed" && videos.length === 0) {
+        if (finalStatus !== "completed" && persistedVideos.length === 0) {
           await agent.globalBus.publish({
             type: "kairo.task.failed",
             source: "tool:toapis",
@@ -695,7 +902,7 @@ export class ToAPIsPlugin implements Plugin {
         await agent.globalBus.publish({
           type: "kairo.tool.media.completed",
           source: "tool:toapis",
-          data: { kind, model, videos },
+          data: { kind, model, videos: persistedVideos },
           correlationId,
         });
         await agent.globalBus.publish({
@@ -708,7 +915,7 @@ export class ToAPIsPlugin implements Plugin {
             kind,
             model,
             status: "completed",
-            result: { videos },
+            result: { videos: persistedVideos },
           },
           correlationId,
         });
@@ -721,7 +928,7 @@ export class ToAPIsPlugin implements Plugin {
           providerStatus: finalStatus,
           submitted: true,
           completed: true,
-          videos,
+          videos: persistedVideos,
           result: finalResult,
         };
       }

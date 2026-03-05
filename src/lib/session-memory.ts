@@ -101,6 +101,14 @@ function extractTextFromApiEvent(type: string, data: unknown) {
       return ""
     }
   }
+  const extractActionMessage = (action: Record<string, unknown>) => {
+    const candidates = [action.content, action.message, action.text, action.reply, action.response]
+    for (const candidate of candidates) {
+      const text = toText(candidate)
+      if (text) return text
+    }
+    return ""
+  }
   if (type === "kairo.user.message") {
     const content = record.content ?? record.prompt
     return typeof content === "string" ? content : ""
@@ -113,8 +121,11 @@ function extractTextFromApiEvent(type: string, data: unknown) {
     if (typeof action === "object" && action !== null) {
       const actionRecord = action as Record<string, unknown>
       const actionType = toText(actionRecord.type)
-      const content = toText(actionRecord.content)
-      if ((actionType === "say" || actionType === "query") && content) {
+      const content = extractActionMessage(actionRecord)
+      if ((actionType === "say" || actionType === "query" || actionType === "speak" || actionType === "reply") && content) {
+        return content
+      }
+      if (content && (!actionType || actionType === "message")) {
         return content
       }
       if (actionType) return `动作: ${actionType}`
@@ -155,7 +166,17 @@ function extractRoleFromApiEvent(type: string, data: unknown): SessionMemoryItem
       const action = (data as Record<string, unknown>).action
       if (typeof action === "object" && action !== null) {
         const actionType = (action as Record<string, unknown>).type
-        if (actionType === "say" || actionType === "query") {
+        if (actionType === "say" || actionType === "query" || actionType === "speak" || actionType === "reply") {
+          return "assistant"
+        }
+        const actionRecord = action as Record<string, unknown>
+        const hasMessage =
+          typeof actionRecord.content === "string" ||
+          typeof actionRecord.message === "string" ||
+          typeof actionRecord.text === "string" ||
+          typeof actionRecord.reply === "string" ||
+          typeof actionRecord.response === "string"
+        if (hasMessage && (actionType === undefined || actionType === null || actionType === "message")) {
           return "assistant"
         }
       }

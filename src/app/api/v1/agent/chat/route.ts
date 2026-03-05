@@ -14,7 +14,7 @@ const chatSchema = z.object({
   sessionId: z.string().min(1).max(128),
   prompt: z.string().min(1).max(20000),
   targetAgentId: z.string().min(1).max(128).optional(),
-  timeoutMs: z.number().int().min(1000).max(120000).optional(),
+  timeoutMs: z.number().int().min(1000).max(1800000).optional(),
   waitForResult: z.boolean().optional(),
   streamEvents: z.boolean().optional(),
   memoryWindow: z.number().int().min(1).max(100).optional(),
@@ -26,6 +26,8 @@ const chatSchema = z.object({
   traceId: z.string().min(1).max(128).optional(),
   spanId: z.string().min(1).max(128).optional(),
 })
+
+const SSE_HEARTBEAT_INTERVAL_MS = 15000
 
 async function assertProjectAccess(userId: string, projectId: string) {
   const [project] = await db
@@ -66,6 +68,71 @@ function toText(value: unknown): string {
   }
 }
 
+function formatTaskOrMediaEvent(type: string, data: Record<string, unknown>): string {
+  const kind = toText(data.kind)
+  const model = toText(data.model)
+  const status = toText(data.providerStatus) || toText(data.status)
+  const message = toText(data.message) || toText(data.error)
+  const progressRaw = data.progress
+  const progress =
+    typeof progressRaw === "number"
+      ? progressRaw
+      : typeof progressRaw === "string"
+        ? Number(progressRaw)
+        : Number.NaN
+  const result = toRecord(data.result)
+  const images = Array.isArray(data.images)
+    ? data.images.length
+    : Array.isArray(result?.images)
+      ? result.images.length
+      : 0
+  const videos = Array.isArray(data.videos)
+    ? data.videos.length
+    : Array.isArray(result?.videos)
+      ? result.videos.length
+      : 0
+  const taskLabel = `${kind || "任务"}${model ? ` (${model})` : ""}`
+
+  if (type === "kairo.task.started") {
+    return `任务已开始: ${taskLabel}`
+  }
+  if (type === "kairo.task.updated") {
+    if (Number.isFinite(progress)) {
+      return `任务进度: ${Math.round(progress)}%`
+    }
+    if (status) {
+      return `任务状态: ${status}`
+    }
+    return `任务状态更新: ${taskLabel}`
+  }
+  if (type === "kairo.task.completed") {
+    if (videos > 0) return `任务完成: 已生成 ${videos} 个视频`
+    if (images > 0) return `任务完成: 已生成 ${images} 张图片`
+    return `任务已完成: ${taskLabel}`
+  }
+  if (type === "kairo.task.failed") {
+    if (message) return `任务失败: ${message}`
+    return `任务失败: ${taskLabel}`
+  }
+  if (type === "kairo.tool.media.completed") {
+    if (videos > 0) return `媒体生成完成: ${videos} 个视频`
+    if (images > 0) return `媒体生成完成: ${images} 张图片`
+    return "媒体生成完成"
+  }
+  return ""
+}
+
+function extractActionMessage(action: Record<string, unknown>) {
+  const candidates = [action.content, action.message, action.text, action.reply, action.response]
+  for (const candidate of candidates) {
+    const text = toText(candidate)
+    if (text) {
+      return text
+    }
+  }
+  return ""
+}
+
 function toSessionMemoryFromRuntimeEvent(event: { type: string; data: unknown }) {
   const data = toRecord(event.data) || {}
   if (event.type === "kairo.user.message" || event.type === "kairo.session.context") {
@@ -80,8 +147,11 @@ function toSessionMemoryFromRuntimeEvent(event: { type: string; data: unknown })
     const action = toRecord(data.action)
     if (!action) return null
     const actionType = toText(action.type)
-    const content = toText(action.content)
-    if ((actionType === "say" || actionType === "query") && content) {
+    const content = extractActionMessage(action)
+    if ((actionType === "say" || actionType === "query" || actionType === "speak" || actionType === "reply") && content) {
+      return { role: "assistant" as const, content }
+    }
+    if (content && (!actionType || actionType === "message")) {
       return { role: "assistant" as const, content }
     }
     if (actionType) {
@@ -107,6 +177,10 @@ function toSessionMemoryFromRuntimeEvent(event: { type: string; data: unknown })
     const result = toText(data.result)
     if (result) return { role: "event" as const, content: `处理完成: ${result}` }
     return { role: "event" as const, content: "处理完成" }
+  }
+  const taskOrMediaText = formatTaskOrMediaEvent(event.type, data)
+  if (taskOrMediaText) {
+    return { role: "event" as const, content: taskOrMediaText }
   }
   const content = toText(data.content)
   if (!content) return null
@@ -382,8 +456,51 @@ export async function POST(request: Request) {
     const spanId = randomUUID()
     const stream = new ReadableStream({
       start(controller) {
+        let closed = false
+        let heartbeatTimer: ReturnType<typeof setInterval> | null = setInterval(() => {
+          if (closed) {
+            return
+          }
+          try {
+            controller.enqueue(
+              encoder.encode(
+                formatSseEvent("ping", {
+                  ts: Date.now(),
+                })
+              )
+            )
+          } catch {
+            closed = true
+            if (heartbeatTimer) {
+              clearInterval(heartbeatTimer)
+              heartbeatTimer = null
+            }
+          }
+        }, SSE_HEARTBEAT_INTERVAL_MS)
         const push = (event: string, data: unknown) => {
-          controller.enqueue(encoder.encode(formatSseEvent(event, data)))
+          if (closed) {
+            return
+          }
+          try {
+            controller.enqueue(encoder.encode(formatSseEvent(event, data)))
+          } catch {
+            closed = true
+            if (heartbeatTimer) {
+              clearInterval(heartbeatTimer)
+              heartbeatTimer = null
+            }
+          }
+        }
+        const close = () => {
+          if (closed) {
+            return
+          }
+          closed = true
+          if (heartbeatTimer) {
+            clearInterval(heartbeatTimer)
+            heartbeatTimer = null
+          }
+          controller.close()
         }
         const handle = async () => {
           try {
@@ -446,17 +563,19 @@ export async function POST(request: Request) {
               message: error instanceof Error ? error.message : "会话执行失败",
             })
           } finally {
-            controller.close()
+            close()
           }
         }
         void handle()
       },
+      cancel() {},
     })
     return new Response(stream, {
       headers: {
         "Content-Type": "text/event-stream; charset=utf-8",
         "Cache-Control": "no-cache, no-transform",
         Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
       },
     })
   }
