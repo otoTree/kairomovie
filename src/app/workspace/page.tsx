@@ -3,8 +3,11 @@
 import Image from "next/image"
 import Link from "next/link"
 import {
+  FileImage,
+  FileText,
   FolderOpen,
   History,
+  Link2,
   MessageSquareText,
   PanelRightClose,
   PanelRightOpen,
@@ -15,6 +18,7 @@ import {
   Type,
   Trash2,
   Upload,
+  X,
   ZoomIn,
   ZoomOut,
 } from "lucide-react"
@@ -215,6 +219,20 @@ function toCanvasNode(value: unknown): CanvasNode | null {
   }
 }
 
+function buildNodeChatLines(node: CanvasNode) {
+  return [node.contextLabel?.trim() || node.title, node.content?.trim() || "", node.text?.trim() || "", node.src || ""]
+    .filter((item) => item.length > 0)
+    .join("\n")
+}
+
+function buildNodeChatPromptBlock(node: CanvasNode, index: number) {
+  const title = node.contextLabel?.trim() || node.title
+  const content = node.content?.trim() || ""
+  const text = node.text?.trim() || ""
+  const src = node.src || ""
+  return `节点${index + 1}（${node.type}）\n标题: ${title}\n核心元信息: ${content || "无"}\n文本内容: ${text || "无"}\n资源链接: ${src || "无"}`
+}
+
 function extractMessagesFromEvents(items: EventItem[]): Message[] {
   const ordered = [...items].sort((a, b) => {
     const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0
@@ -361,6 +379,7 @@ export default function WorkspacePage() {
   const [guides, setGuides] = useState<Guides>({ x: null, y: null })
   const [isPanning, setIsPanning] = useState(false)
   const [chatInput, setChatInput] = useState("")
+  const [chatNodeIds, setChatNodeIds] = useState<string[]>([])
   const [chatLoading, setChatLoading] = useState(false)
   const [messages, setMessages] = useState<Message[]>([])
   const [sessionId, setSessionId] = useState(getInitialSessionId)
@@ -390,6 +409,13 @@ export default function WorkspacePage() {
   const activeHistoryIdRef = useRef("")
 
   const mediaAssets = useMemo(() => assets.filter((item) => item.kind === "image" || item.kind === "video"), [assets])
+  const chatNodes = useMemo(
+    () =>
+      chatNodeIds
+        .map((id) => nodes.find((node) => node.id === id))
+        .filter((node): node is CanvasNode => Boolean(node)),
+    [chatNodeIds, nodes]
+  )
 
   const loadAssets = useCallback(async (authToken: string, nextProjectId: string) => {
     try {
@@ -561,6 +587,10 @@ export default function WorkspacePage() {
   }, [sessionId])
 
   useEffect(() => {
+    setChatNodeIds((current) => current.filter((id) => nodes.some((node) => node.id === id)))
+  }, [nodes])
+
+  useEffect(() => {
     if (!token || !projectId) {
       return
     }
@@ -580,6 +610,8 @@ export default function WorkspacePage() {
     setCanvasName(nextCanvasName)
     setActiveHistoryId("")
     setMessage("已新建画布")
+    setChatNodeIds([])
+    setChatInput("")
   }
 
   function addTextNode(x?: number, y?: number) {
@@ -798,15 +830,13 @@ export default function WorkspacePage() {
   }
 
   function addNodeToChat(node: CanvasNode) {
-    const lines = [node.contextLabel?.trim() || node.title, node.content?.trim() || "", node.text?.trim() || "", node.src || ""]
-      .filter((item) => item.length > 0)
-      .join("\n")
+    const lines = buildNodeChatLines(node)
     if (!lines) {
       setMessage("当前节点没有可添加到对话的内容")
       return
     }
-    setChatInput((current) => (current ? `${current}\n${lines}` : lines))
-    setMessage("已添加到对话输入框")
+    setChatNodeIds((current) => (current.includes(node.id) ? current : [...current, node.id]))
+    setMessage("已添加节点引用")
   }
 
   function removeNode(nodeId: string) {
@@ -944,15 +974,21 @@ export default function WorkspacePage() {
     if (!token || !projectId) {
       return
     }
-    if (!chatInput.trim()) {
+    const plainPrompt = chatInput.trim()
+    if (!plainPrompt && chatNodes.length === 0) {
       setMessage("请输入聊天内容")
       return
     }
-    const prompt = chatInput.trim()
+    const nodePromptBlock = chatNodes.map((node, index) => buildNodeChatPromptBlock(node, index)).join("\n\n")
+    const prompt = nodePromptBlock
+      ? `${plainPrompt ? `【用户输入】\n${plainPrompt}\n\n` : ""}【附加画布节点】\n${nodePromptBlock}`
+      : plainPrompt
+    const userMessage = plainPrompt || `已发送 ${chatNodes.length} 个画布节点`
     const canvasContext = buildAgentCanvasContext()
     const userMessageAt = new Date().toISOString()
-    setMessages((prev) => [...prev, { role: "user", text: prompt, createdAt: userMessageAt }])
+    setMessages((prev) => [...prev, { role: "user", text: userMessage, createdAt: userMessageAt }])
     setChatInput("")
+    setChatNodeIds([])
     setChatLoading(true)
     try {
       const accepted = await requestJson<ChatResponse>(
@@ -1290,12 +1326,13 @@ export default function WorkspacePage() {
                   <div data-node-interactive="true" className="absolute left-1/2 top-0 z-30 -translate-x-1/2 -translate-y-[calc(100%+8px)]">
                     <div className="flex items-center gap-1 rounded-full border border-black/12 bg-white/98 px-2 py-1 shadow-[0_10px_24px_rgba(0,0,0,0.14)] backdrop-blur">
                       <Button
-                        size="sm"
+                        size="icon"
                         variant="ghost"
-                        className="h-7 cursor-pointer rounded-full px-2 text-xs"
+                        className="size-7 cursor-pointer rounded-full"
                         onClick={() => addNodeToChat(node)}
+                        title="添加到对话"
                       >
-                        添加到对话
+                        <SendHorizontal className="size-3.5" />
                       </Button>
                       <Popover>
                         <PopoverTrigger asChild>
@@ -1656,10 +1693,37 @@ export default function WorkspacePage() {
               {messages.length === 0 ? <p className="text-sm text-black/50">还没有事件</p> : null}
             </div>
             <div className="space-y-2">
+              {chatNodes.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5 rounded-md border border-black/10 bg-[oklch(0.992_0_0)] p-1.5">
+                  {chatNodes.map((node) => (
+                    <span
+                      key={node.id}
+                      className="inline-flex h-6 max-w-full items-center gap-1 rounded-full border border-black/10 bg-white px-2 text-[11px] text-black/70"
+                    >
+                      {node.type === "text" ? (
+                        <FileText className="size-3 text-black/55" />
+                      ) : node.type === "image" ? (
+                        <FileImage className="size-3 text-black/55" />
+                      ) : (
+                        <Link2 className="size-3 text-black/55" />
+                      )}
+                      <span className="max-w-[160px] truncate">{node.contextLabel?.trim() || node.title}</span>
+                      <button
+                        type="button"
+                        className="inline-flex cursor-pointer items-center text-black/45 hover:text-black/75"
+                        onClick={() => setChatNodeIds((current) => current.filter((id) => id !== node.id))}
+                        aria-label={`移除${node.title}`}
+                      >
+                        <X className="size-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
               <Textarea
                 value={chatInput}
                 onChange={(event) => setChatInput(event.target.value)}
-                rows={3}
+                rows={2}
                 placeholder="输入你想让 Agent 帮你做的内容"
               />
               <Button className="w-full cursor-pointer" disabled={chatLoading} onClick={sendChat}>
