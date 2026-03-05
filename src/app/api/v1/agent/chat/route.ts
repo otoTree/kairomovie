@@ -46,6 +46,71 @@ function mapMemoryRole(role: string) {
   return "event"
 }
 
+function toRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null) {
+    return null
+  }
+  return value as Record<string, unknown>
+}
+
+function toText(value: unknown): string {
+  if (typeof value === "string") return value
+  if (typeof value === "number" || typeof value === "boolean") return String(value)
+  if (value === null || value === undefined) return ""
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return ""
+  }
+}
+
+function toSessionMemoryFromRuntimeEvent(event: { type: string; data: unknown }) {
+  const data = toRecord(event.data) || {}
+  if (event.type === "kairo.user.message" || event.type === "kairo.session.context") {
+    return null
+  }
+  if (event.type === "kairo.agent.thought") {
+    const thought = toText(data.thought)
+    if (!thought) return null
+    return { role: "thought" as const, content: thought }
+  }
+  if (event.type === "kairo.agent.action") {
+    const action = toRecord(data.action)
+    if (!action) return null
+    const actionType = toText(action.type)
+    const content = toText(action.content)
+    if ((actionType === "say" || actionType === "query") && content) {
+      return { role: "assistant" as const, content }
+    }
+    if (actionType) {
+      return { role: "event" as const, content: `动作: ${actionType}` }
+    }
+    return null
+  }
+  if (event.type === "kairo.tool.result") {
+    const error = toText(data.error)
+    if (error) return { role: "event" as const, content: `工具错误: ${error}` }
+    const result = toText(data.result)
+    if (result) return { role: "event" as const, content: `工具结果: ${result}` }
+    return null
+  }
+  if (event.type === "kairo.intent.started") {
+    const intent = toText(data.intent)
+    if (!intent) return null
+    return { role: "event" as const, content: `开始处理: ${intent}` }
+  }
+  if (event.type === "kairo.intent.ended") {
+    const error = toText(data.error)
+    if (error) return { role: "event" as const, content: `处理失败: ${error}` }
+    const result = toText(data.result)
+    if (result) return { role: "event" as const, content: `处理完成: ${result}` }
+    return { role: "event" as const, content: "处理完成" }
+  }
+  const content = toText(data.content)
+  if (!content) return null
+  return { role: "event" as const, content }
+}
+
 export async function GET(request: Request) {
   const user = await getAuthUserFromAuthorizationHeader(request.headers.get("authorization"))
   if (!user) {
@@ -228,38 +293,66 @@ export async function POST(request: Request) {
     spanId: randomUUID(),
   })
 
-  for (const message of result.messages) {
-    await appendSessionMemory(user.id, sessionId, {
-      role: "assistant",
-      content: message,
-      eventType: "kairo.agent.action",
-      metadata: {
-        correlationId: result.correlationId,
-        traceId: result.traceId,
-        canvasName: canvasName || null,
-      },
-    }, projectId)
+  let persistedCount = 0
+  for (const event of result.events) {
+    const mapped = toSessionMemoryFromRuntimeEvent({
+      type: String(event.type || ""),
+      data: event.data,
+    })
+    if (!mapped) {
+      continue
+    }
+    persistedCount += 1
     await appendSessionMemoryEvent(
       user.id,
       sessionId,
       {
-        role: "assistant",
-        content: message,
-        eventType: "kairo.agent.action",
+        role: mapped.role,
+        content: mapped.content,
+        eventType: String(event.type || "kairo.session.event"),
         metadata: {
-          correlationId: result.correlationId,
-          traceId: result.traceId,
+          eventId: event.id,
+          source: event.source,
+          time: event.time,
+          correlationId: event.correlationId ?? result.correlationId,
+          traceId: event.traceId ?? result.traceId,
+          spanId: event.spanId ?? null,
           canvasName: canvasName || null,
         },
       },
       {
         projectId: projectId ?? null,
-        correlationId: result.correlationId,
-        causationId: result.triggerEventId,
-        traceId: result.traceId,
-        spanId: randomUUID(),
+        correlationId: event.correlationId ?? result.correlationId,
+        causationId: event.causationId ?? result.triggerEventId,
+        traceId: event.traceId ?? result.traceId,
+        spanId: event.spanId ?? randomUUID(),
       }
     )
+  }
+  if (persistedCount === 0) {
+    for (const message of result.messages) {
+      await appendSessionMemoryEvent(
+        user.id,
+        sessionId,
+        {
+          role: "assistant",
+          content: message,
+          eventType: "kairo.agent.action",
+          metadata: {
+            correlationId: result.correlationId,
+            traceId: result.traceId,
+            canvasName: canvasName || null,
+          },
+        },
+        {
+          projectId: projectId ?? null,
+          correlationId: result.correlationId,
+          causationId: result.triggerEventId,
+          traceId: result.traceId,
+          spanId: randomUUID(),
+        }
+      )
+    }
   }
   const memoryFile = await syncSessionMemoryMarkdown({
     userId: user.id,

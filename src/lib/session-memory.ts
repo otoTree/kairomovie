@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto"
-import { and, desc, eq, inArray, sql } from "drizzle-orm"
+import { and, desc, eq, sql } from "drizzle-orm"
 import { db } from "@/db"
 import { apiEvents } from "@/db/schema"
 import { ensureCloudTables } from "@/db/ensure-cloud-tables"
@@ -7,7 +7,7 @@ import { getProjectObjectKey, getUserObjectKey } from "@/lib/storage-keys"
 import { createStorageProvider } from "@/lib/storage-provider"
 
 export type SessionMemoryItem = {
-  role: "user" | "assistant" | "system" | "event"
+  role: "user" | "assistant" | "thought" | "system" | "event"
   content: string
   eventType?: string
   metadata?: Record<string, unknown>
@@ -15,8 +15,6 @@ export type SessionMemoryItem = {
 }
 
 let ensured = false
-
-const SESSION_MEMORY_EVENT_TYPES = ["kairo.user.message", "kairo.agent.action", "kairo.session.event", "kairo.session.system"] as const
 
 async function ensureTable() {
   if (ensured) {
@@ -93,32 +91,81 @@ function extractTextFromApiEvent(type: string, data: unknown) {
     return ""
   }
   const record = data as Record<string, unknown>
+  const toText = (value: unknown) => {
+    if (typeof value === "string") return value
+    if (typeof value === "number" || typeof value === "boolean") return String(value)
+    if (value === null || value === undefined) return ""
+    try {
+      return JSON.stringify(value)
+    } catch {
+      return ""
+    }
+  }
   if (type === "kairo.user.message") {
     const content = record.content ?? record.prompt
     return typeof content === "string" ? content : ""
   }
+  if (type === "kairo.agent.thought") {
+    return toText(record.thought)
+  }
   if (type === "kairo.agent.action") {
     const action = record.action
     if (typeof action === "object" && action !== null) {
-      const content = (action as Record<string, unknown>).content
-      if (typeof content === "string") {
+      const actionRecord = action as Record<string, unknown>
+      const actionType = toText(actionRecord.type)
+      const content = toText(actionRecord.content)
+      if ((actionType === "say" || actionType === "query") && content) {
         return content
       }
+      if (actionType) return `动作: ${actionType}`
     }
     const content = record.content
     return typeof content === "string" ? content : ""
   }
+  if (type === "kairo.tool.result") {
+    const error = toText(record.error)
+    if (error) return `工具错误: ${error}`
+    const result = toText(record.result)
+    if (result) return `工具结果: ${result}`
+    return ""
+  }
+  if (type === "kairo.intent.started") {
+    const intent = toText(record.intent)
+    return intent ? `开始处理: ${intent}` : ""
+  }
+  if (type === "kairo.intent.ended") {
+    const error = toText(record.error)
+    if (error) return `处理失败: ${error}`
+    const result = toText(record.result)
+    if (result) return `处理完成: ${result}`
+    return "处理完成"
+  }
+  if (type === "kairo.session.context") {
+    return ""
+  }
   const content = record.content
-  return typeof content === "string" ? content : ""
+  return toText(content)
 }
 
 function extractRoleFromApiEvent(type: string, data: unknown): SessionMemoryItem["role"] {
   if (type === "kairo.user.message") return "user"
-  if (type === "kairo.agent.action") return "assistant"
+  if (type === "kairo.agent.thought") return "thought"
+  if (type === "kairo.agent.action") {
+    if (typeof data === "object" && data !== null) {
+      const action = (data as Record<string, unknown>).action
+      if (typeof action === "object" && action !== null) {
+        const actionType = (action as Record<string, unknown>).type
+        if (actionType === "say" || actionType === "query") {
+          return "assistant"
+        }
+      }
+    }
+    return "event"
+  }
   if (type === "kairo.session.system") return "system"
   if (typeof data === "object" && data !== null) {
     const role = (data as Record<string, unknown>).role
-    if (role === "user" || role === "assistant" || role === "system" || role === "event") {
+    if (role === "user" || role === "assistant" || role === "thought" || role === "system" || role === "event") {
       return role
     }
   }
@@ -126,7 +173,7 @@ function extractRoleFromApiEvent(type: string, data: unknown): SessionMemoryItem
 }
 
 function toSessionRole(value: unknown): SessionMemoryItem["role"] {
-  if (value === "user" || value === "assistant" || value === "system" || value === "event") {
+  if (value === "user" || value === "assistant" || value === "thought" || value === "system" || value === "event") {
     return value
   }
   return "event"
@@ -159,7 +206,6 @@ async function listRecentSessionMemoryFromApiEvents(userId: string, sessionId: s
   const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 200) : 20
   const where = [
     eq(apiEvents.userId, userId),
-    inArray(apiEvents.type, SESSION_MEMORY_EVENT_TYPES as unknown as string[]),
     sql`${apiEvents.data} ->> 'sessionId' = ${sessionId}`,
   ]
   if (projectId) {
