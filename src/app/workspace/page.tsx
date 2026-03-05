@@ -1004,91 +1004,168 @@ export default function WorkspacePage() {
     setChatNodeIds([])
     setChatLoading(true)
     try {
-      const accepted = await requestJson<ChatResponse>(
-        "/api/v1/agent/chat",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            sessionId,
-            projectId,
-            canvasId: activeCanvasId || undefined,
-            canvasName,
-            canvasContext: canvasContext || undefined,
-            prompt,
-            waitForResult: true,
-            timeoutMs: 90000,
-          }),
-        },
-        token
-      )
-      const syncItems = (accepted.events || []).map((event) => ({
-        id: event.id,
-        type: event.type,
-        data: event.data || {},
-        createdAt: event.time,
-      }))
-      const nodesFromTools: CanvasNode[] = []
-      for (const event of syncItems) {
-        if (event.type !== "kairo.tool.result") {
-          continue
+      const seenEventIds = new Set<string>()
+      let hasDisplayMessage = false
+      const applyRuntimeEvent = (event: EventItem) => {
+        if (!event.id || seenEventIds.has(event.id)) {
+          return
         }
-        const dataRecord = toRecord(event.data)
-        const resultRecord = toRecord(dataRecord?.result)
-        if (!resultRecord) {
-          continue
-        }
-        const resultCanvasId = typeof resultRecord.canvasId === "string" ? resultRecord.canvasId : ""
-        const resultCanvasName = typeof resultRecord.canvasName === "string" ? resultRecord.canvasName : ""
-        if (activeCanvasId && resultCanvasId && resultCanvasId !== activeCanvasId) {
-          continue
-        }
-        if (!activeCanvasId && resultCanvasName && resultCanvasName !== canvasName) {
-          continue
-        }
-        const node = toCanvasNode(resultRecord.node)
-        if (node) {
-          nodesFromTools.push(node)
-        }
-      }
-      if (nodesFromTools.length > 0) {
-        setNodes((prev) => {
-          const existing = new Set(prev.map((node) => node.id))
-          const incoming = nodesFromTools.filter((node) => !existing.has(node.id))
-          if (incoming.length === 0) {
-            return prev
+        seenEventIds.add(event.id)
+        if (event.type === "kairo.tool.result") {
+          const dataRecord = toRecord(event.data)
+          const resultRecord = toRecord(dataRecord?.result)
+          if (resultRecord) {
+            const resultCanvasId = typeof resultRecord.canvasId === "string" ? resultRecord.canvasId : ""
+            const resultCanvasName = typeof resultRecord.canvasName === "string" ? resultRecord.canvasName : ""
+            if ((!activeCanvasId || !resultCanvasId || resultCanvasId === activeCanvasId) && (!resultCanvasName || resultCanvasName === canvasName)) {
+              const node = toCanvasNode(resultRecord.node)
+              if (node) {
+                setNodes((prev) => {
+                  if (prev.some((current) => current.id === node.id)) {
+                    return prev
+                  }
+                  return [...prev, node]
+                })
+                const rect = viewportRef.current?.getBoundingClientRect()
+                if (rect) {
+                  const viewWidth = rect.width / scale
+                  const viewHeight = rect.height / scale
+                  setOffset((prev) => {
+                    const nodeMinX = node.x
+                    const nodeMaxX = node.x + node.width
+                    const nodeMinY = node.y
+                    const nodeMaxY = node.y + node.height
+                    const viewMinX = prev.x
+                    const viewMaxX = prev.x + viewWidth
+                    const viewMinY = prev.y
+                    const viewMaxY = prev.y + viewHeight
+                    const intersects =
+                      nodeMaxX >= viewMinX && nodeMinX <= viewMaxX && nodeMaxY >= viewMinY && nodeMinY <= viewMaxY
+                    if (intersects) {
+                      return prev
+                    }
+                    return {
+                      x: Math.max(0, node.x + node.width / 2 - viewWidth / 2),
+                      y: Math.max(0, node.y + node.height / 2 - viewHeight / 2),
+                    }
+                  })
+                }
+              }
+            }
           }
-          return [...prev, ...incoming]
-        })
-        const latestNode = nodesFromTools[nodesFromTools.length - 1]
-        const rect = viewportRef.current?.getBoundingClientRect()
-        if (rect) {
-          const viewWidth = rect.width / scale
-          const viewHeight = rect.height / scale
-          setOffset((prev) => {
-            const nodeMinX = latestNode.x
-            const nodeMaxX = latestNode.x + latestNode.width
-            const nodeMinY = latestNode.y
-            const nodeMaxY = latestNode.y + latestNode.height
-            const viewMinX = prev.x
-            const viewMaxX = prev.x + viewWidth
-            const viewMinY = prev.y
-            const viewMaxY = prev.y + viewHeight
-            const intersects =
-              nodeMaxX >= viewMinX && nodeMinX <= viewMaxX && nodeMaxY >= viewMinY && nodeMinY <= viewMaxY
-            if (intersects) {
-              return prev
-            }
-            return {
-              x: Math.max(0, latestNode.x + latestNode.width / 2 - viewWidth / 2),
-              y: Math.max(0, latestNode.y + latestNode.height / 2 - viewHeight / 2),
-            }
-          })
+        }
+        const eventMessages = extractMessagesFromEvents([event])
+        if (eventMessages.length > 0) {
+          hasDisplayMessage = true
+          setMessages((prev) => [...prev, ...eventMessages])
         }
       }
-      const eventMessages = extractMessagesFromEvents(syncItems)
-      if (eventMessages.length > 0) {
-        setMessages((prev) => [...prev, ...eventMessages])
+
+      const response = await fetch("/api/v1/agent/chat", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+          accept: "text/event-stream",
+        },
+        body: JSON.stringify({
+          sessionId,
+          projectId,
+          canvasId: activeCanvasId || undefined,
+          canvasName,
+          canvasContext: canvasContext || undefined,
+          prompt,
+          waitForResult: true,
+          streamEvents: true,
+          timeoutMs: 90000,
+        }),
+      })
+      if (!response.ok) {
+        const failureBody = await response.json().catch(() => null)
+        const failureMessage =
+          failureBody && typeof failureBody === "object" && typeof (failureBody as Record<string, unknown>).message === "string"
+            ? ((failureBody as Record<string, unknown>).message as string)
+            : `请求失败：${response.status}`
+        throw new Error(failureMessage)
+      }
+      const contentType = response.headers.get("content-type") || ""
+      if (!contentType.includes("text/event-stream")) {
+        const accepted = (await response.json()) as ChatResponse
+        const syncItems = (accepted.events || []).map((event) => ({
+          id: event.id,
+          type: event.type,
+          data: event.data || {},
+          createdAt: event.time,
+        }))
+        for (const item of syncItems) {
+          applyRuntimeEvent(item)
+        }
       } else {
+        const reader = response.body?.getReader()
+        if (!reader) {
+          throw new Error("未获取到事件流")
+        }
+        const decoder = new TextDecoder()
+        let buffer = ""
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) {
+            break
+          }
+          buffer += decoder.decode(value, { stream: true })
+          while (true) {
+            const boundary = buffer.indexOf("\n\n")
+            if (boundary === -1) {
+              break
+            }
+            const chunk = buffer.slice(0, boundary)
+            buffer = buffer.slice(boundary + 2)
+            const lines = chunk.split("\n")
+            let eventName = "message"
+            const dataLines: string[] = []
+            for (const line of lines) {
+              if (line.startsWith("event:")) {
+                eventName = line.slice(6).trim()
+                continue
+              }
+              if (line.startsWith("data:")) {
+                dataLines.push(line.slice(5).trim())
+              }
+            }
+            if (dataLines.length === 0) {
+              continue
+            }
+            const payloadText = dataLines.join("\n")
+            const payload = JSON.parse(payloadText) as unknown
+            if (eventName === "kairo_event") {
+              const eventRecord = toRecord(payload)
+              if (!eventRecord) {
+                continue
+              }
+              const id = typeof eventRecord.id === "string" ? eventRecord.id : ""
+              const type = typeof eventRecord.type === "string" ? eventRecord.type : ""
+              if (!id || !type) {
+                continue
+              }
+              const eventData = toRecord(eventRecord.data) || {}
+              const createdAt = typeof eventRecord.time === "string" ? eventRecord.time : undefined
+              applyRuntimeEvent({
+                id,
+                type,
+                data: eventData,
+                createdAt,
+              })
+              continue
+            }
+            if (eventName === "error") {
+              const errorRecord = toRecord(payload)
+              const reason = typeof errorRecord?.message === "string" ? errorRecord.message : "会话执行失败"
+              throw new Error(reason)
+            }
+          }
+        }
+      }
+      if (!hasDisplayMessage) {
         setMessages((prev) => [...prev, { role: "event", text: "已完成，但没有可展示内容。", createdAt: new Date().toISOString() }])
       }
       await loadChatSessions(token, projectId, canvasName)

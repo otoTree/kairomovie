@@ -59,6 +59,8 @@ export type ChatOutput = {
   events: KairoEvent[]
 }
 
+export type ChatEventHandler = (event: KairoEvent) => void | Promise<void>
+
 export class NextKairoRuntime {
   private readonly app = new Application()
   private readonly agent = new AgentPlugin()
@@ -168,7 +170,7 @@ export class NextKairoRuntime {
     return events.filter((event) => event.correlationId === correlationId)
   }
 
-  async chat(input: ChatInput): Promise<ChatOutput> {
+  private async executeChat(input: ChatInput, onEvent?: ChatEventHandler): Promise<ChatOutput> {
     await this.start()
     const timeoutMs = input.timeoutMs ?? 30000
     const thoughts: string[] = []
@@ -200,6 +202,9 @@ export class NextKairoRuntime {
         return
       }
       events.push(event)
+      if (onEvent) {
+        void Promise.resolve(onEvent(event))
+      }
       if (event.type === "kairo.agent.thought") {
         const thought = (event.data as { thought?: string }).thought
         if (thought) {
@@ -236,6 +241,14 @@ export class NextKairoRuntime {
       clearTimeout(timer)
       unsubscribe()
     }
+  }
+
+  async chat(input: ChatInput): Promise<ChatOutput> {
+    return this.executeChat(input)
+  }
+
+  async chatStream(input: ChatInput, onEvent: ChatEventHandler): Promise<ChatOutput> {
+    return this.executeChat(input, onEvent)
   }
 }
 

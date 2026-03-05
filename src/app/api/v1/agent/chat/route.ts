@@ -16,6 +16,7 @@ const chatSchema = z.object({
   targetAgentId: z.string().min(1).max(128).optional(),
   timeoutMs: z.number().int().min(1000).max(120000).optional(),
   waitForResult: z.boolean().optional(),
+  streamEvents: z.boolean().optional(),
   memoryWindow: z.number().int().min(1).max(100).optional(),
   projectId: z.string().min(1).max(128).optional(),
   canvasId: z.string().min(1).max(128).optional(),
@@ -112,6 +113,96 @@ function toSessionMemoryFromRuntimeEvent(event: { type: string; data: unknown })
   return { role: "event" as const, content }
 }
 
+async function persistRuntimeEvents(params: {
+  userId: string
+  sessionId: string
+  projectId?: string
+  canvasName?: string
+  result: {
+    correlationId: string
+    traceId: string
+    triggerEventId: string
+    messages: string[]
+    events: Array<{
+      id: string
+      type: string
+      source: string
+      time: string
+      data: unknown
+      correlationId?: string
+      causationId?: string
+      traceId?: string
+      spanId?: string
+    }>
+  }
+}) {
+  let persistedCount = 0
+  for (const event of params.result.events) {
+    const mapped = toSessionMemoryFromRuntimeEvent({
+      type: String(event.type || ""),
+      data: event.data,
+    })
+    if (!mapped) {
+      continue
+    }
+    persistedCount += 1
+    await appendSessionMemoryEvent(
+      params.userId,
+      params.sessionId,
+      {
+        role: mapped.role,
+        content: mapped.content,
+        eventType: String(event.type || "kairo.session.event"),
+        metadata: {
+          eventId: event.id,
+          source: event.source,
+          time: event.time,
+          correlationId: event.correlationId ?? params.result.correlationId,
+          traceId: event.traceId ?? params.result.traceId,
+          spanId: event.spanId ?? null,
+          canvasName: params.canvasName || null,
+        },
+      },
+      {
+        projectId: params.projectId ?? null,
+        correlationId: event.correlationId ?? params.result.correlationId,
+        causationId: event.causationId ?? params.result.triggerEventId,
+        traceId: event.traceId ?? params.result.traceId,
+        spanId: event.spanId ?? randomUUID(),
+      }
+    )
+  }
+  if (persistedCount === 0) {
+    for (const message of params.result.messages) {
+      await appendSessionMemoryEvent(
+        params.userId,
+        params.sessionId,
+        {
+          role: "assistant",
+          content: message,
+          eventType: "kairo.agent.action",
+          metadata: {
+            correlationId: params.result.correlationId,
+            traceId: params.result.traceId,
+            canvasName: params.canvasName || null,
+          },
+        },
+        {
+          projectId: params.projectId ?? null,
+          correlationId: params.result.correlationId,
+          causationId: params.result.triggerEventId,
+          traceId: params.result.traceId,
+          spanId: randomUUID(),
+        }
+      )
+    }
+  }
+}
+
+function formatSseEvent(event: string, data: unknown) {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+}
+
 export async function GET(request: Request) {
   const user = await getAuthUserFromAuthorizationHeader(request.headers.get("authorization"))
   if (!user) {
@@ -158,6 +249,7 @@ export async function POST(request: Request) {
   const sessionId = parsed.data.sessionId
   const prompt = parsed.data.prompt.trim()
   const waitForResult = parsed.data.waitForResult === true
+  const streamEvents = parsed.data.streamEvents === true
   const memoryWindow = parsed.data.memoryWindow ?? 20
   const projectId = parsed.data.projectId
   const canvasId = parsed.data.canvasId?.trim()
@@ -285,6 +377,90 @@ export async function POST(request: Request) {
     })
   }
 
+  if (streamEvents) {
+    const encoder = new TextEncoder()
+    const spanId = randomUUID()
+    const stream = new ReadableStream({
+      start(controller) {
+        const push = (event: string, data: unknown) => {
+          controller.enqueue(encoder.encode(formatSseEvent(event, data)))
+        }
+        const handle = async () => {
+          try {
+            push("meta", {
+              status: "started",
+              sessionId,
+              contextEventId: contextEvent.eventId,
+              correlationId: contextEvent.correlationId,
+              traceId,
+              spanId,
+            })
+            const result = await kairo.invokeAgentStream(
+              {
+                prompt: enrichedPrompt,
+                targetAgentId: parsed.data.targetAgentId,
+                timeoutMs: parsed.data.timeoutMs,
+                userId: user.id,
+                projectId,
+                canvasId,
+                canvasName,
+                correlationId: contextEvent.correlationId,
+                causationId: contextEvent.eventId,
+                traceId,
+                spanId,
+              },
+              (event) => {
+                push("kairo_event", event)
+              }
+            )
+
+            await persistRuntimeEvents({
+              userId: user.id,
+              sessionId,
+              projectId,
+              canvasName,
+              result,
+            })
+            const memoryFile = await syncSessionMemoryMarkdown({
+              userId: user.id,
+              sessionId,
+              projectId,
+              canvasName,
+              limit: 400,
+            }).catch(() => null)
+            push("done", {
+              status: "completed",
+              mode: "stream",
+              sessionId,
+              contextEventId: contextEvent.eventId,
+              correlationId: result.correlationId,
+              traceId: result.traceId,
+              spanId: result.spanId,
+              triggerEventId: result.triggerEventId,
+              messages: result.messages,
+              thoughts: result.thoughts,
+              memoryFile,
+            })
+          } catch (error) {
+            push("error", {
+              message: error instanceof Error ? error.message : "会话执行失败",
+            })
+          } finally {
+            controller.close()
+          }
+        }
+        void handle()
+      },
+    })
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+      },
+    })
+  }
+
   const result = await kairo.invokeAgent({
     prompt: enrichedPrompt,
     targetAgentId: parsed.data.targetAgentId,
@@ -299,67 +475,13 @@ export async function POST(request: Request) {
     spanId: randomUUID(),
   })
 
-  let persistedCount = 0
-  for (const event of result.events) {
-    const mapped = toSessionMemoryFromRuntimeEvent({
-      type: String(event.type || ""),
-      data: event.data,
-    })
-    if (!mapped) {
-      continue
-    }
-    persistedCount += 1
-    await appendSessionMemoryEvent(
-      user.id,
-      sessionId,
-      {
-        role: mapped.role,
-        content: mapped.content,
-        eventType: String(event.type || "kairo.session.event"),
-        metadata: {
-          eventId: event.id,
-          source: event.source,
-          time: event.time,
-          correlationId: event.correlationId ?? result.correlationId,
-          traceId: event.traceId ?? result.traceId,
-          spanId: event.spanId ?? null,
-          canvasName: canvasName || null,
-        },
-      },
-      {
-        projectId: projectId ?? null,
-        correlationId: event.correlationId ?? result.correlationId,
-        causationId: event.causationId ?? result.triggerEventId,
-        traceId: event.traceId ?? result.traceId,
-        spanId: event.spanId ?? randomUUID(),
-      }
-    )
-  }
-  if (persistedCount === 0) {
-    for (const message of result.messages) {
-      await appendSessionMemoryEvent(
-        user.id,
-        sessionId,
-        {
-          role: "assistant",
-          content: message,
-          eventType: "kairo.agent.action",
-          metadata: {
-            correlationId: result.correlationId,
-            traceId: result.traceId,
-            canvasName: canvasName || null,
-          },
-        },
-        {
-          projectId: projectId ?? null,
-          correlationId: result.correlationId,
-          causationId: result.triggerEventId,
-          traceId: result.traceId,
-          spanId: randomUUID(),
-        }
-      )
-    }
-  }
+  await persistRuntimeEvents({
+    userId: user.id,
+    sessionId,
+    projectId,
+    canvasName,
+    result,
+  })
   const memoryFile = await syncSessionMemoryMarkdown({
     userId: user.id,
     sessionId,
