@@ -155,6 +155,60 @@ function toText(value: unknown) {
   return ""
 }
 
+function toRecord(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>
+      }
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
+function toCanvasNode(value: unknown): CanvasNode | null {
+  const node = toRecord(value)
+  if (!node) {
+    return null
+  }
+  const id = typeof node.id === "string" ? node.id : ""
+  const type = node.type
+  const x = typeof node.x === "number" && Number.isFinite(node.x) ? node.x : null
+  const y = typeof node.y === "number" && Number.isFinite(node.y) ? node.y : null
+  const width = typeof node.width === "number" && Number.isFinite(node.width) ? node.width : null
+  const height = typeof node.height === "number" && Number.isFinite(node.height) ? node.height : null
+  const title = typeof node.title === "string" ? node.title : ""
+  if (
+    !id ||
+    (type !== "text" && type !== "image" && type !== "video") ||
+    x === null ||
+    y === null ||
+    width === null ||
+    height === null ||
+    !title
+  ) {
+    return null
+  }
+  return {
+    id,
+    type,
+    x,
+    y,
+    width,
+    height,
+    title,
+    text: typeof node.text === "string" ? node.text : undefined,
+    src: typeof node.src === "string" ? node.src : undefined,
+    content: typeof node.content === "string" ? node.content : undefined,
+  }
+}
+
 function extractMessagesFromEvents(items: EventItem[]): Message[] {
   const ordered = [...items].sort((a, b) => {
     const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0
@@ -863,6 +917,60 @@ export default function WorkspacePage() {
         data: event.data || {},
         createdAt: event.time,
       }))
+      const nodesFromTools: CanvasNode[] = []
+      for (const event of syncItems) {
+        if (event.type !== "kairo.tool.result") {
+          continue
+        }
+        const dataRecord = toRecord(event.data)
+        const resultRecord = toRecord(dataRecord?.result)
+        if (!resultRecord) {
+          continue
+        }
+        const resultCanvasName = typeof resultRecord.canvasName === "string" ? resultRecord.canvasName : ""
+        if (resultCanvasName && resultCanvasName !== canvasName) {
+          continue
+        }
+        const node = toCanvasNode(resultRecord.node)
+        if (node) {
+          nodesFromTools.push(node)
+        }
+      }
+      if (nodesFromTools.length > 0) {
+        setNodes((prev) => {
+          const existing = new Set(prev.map((node) => node.id))
+          const incoming = nodesFromTools.filter((node) => !existing.has(node.id))
+          if (incoming.length === 0) {
+            return prev
+          }
+          return [...prev, ...incoming]
+        })
+        const latestNode = nodesFromTools[nodesFromTools.length - 1]
+        const rect = viewportRef.current?.getBoundingClientRect()
+        if (rect) {
+          const viewWidth = rect.width / scale
+          const viewHeight = rect.height / scale
+          setOffset((prev) => {
+            const nodeMinX = latestNode.x
+            const nodeMaxX = latestNode.x + latestNode.width
+            const nodeMinY = latestNode.y
+            const nodeMaxY = latestNode.y + latestNode.height
+            const viewMinX = prev.x
+            const viewMaxX = prev.x + viewWidth
+            const viewMinY = prev.y
+            const viewMaxY = prev.y + viewHeight
+            const intersects =
+              nodeMaxX >= viewMinX && nodeMinX <= viewMaxX && nodeMaxY >= viewMinY && nodeMinY <= viewMaxY
+            if (intersects) {
+              return prev
+            }
+            return {
+              x: Math.max(0, latestNode.x + latestNode.width / 2 - viewWidth / 2),
+              y: Math.max(0, latestNode.y + latestNode.height / 2 - viewHeight / 2),
+            }
+          })
+        }
+      }
       const eventMessages = extractMessagesFromEvents(syncItems)
       if (eventMessages.length > 0) {
         setMessages((prev) => [...prev, ...eventMessages])
