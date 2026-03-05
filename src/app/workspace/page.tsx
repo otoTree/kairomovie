@@ -25,6 +25,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { useAuthSession } from "@/hooks/use-auth-session"
 import { requestJson, toErrorMessage } from "@/lib/client-api"
@@ -51,6 +52,8 @@ type CanvasNode = {
   src?: string
   title: string
   content?: string
+  contextEnabled?: boolean
+  contextLabel?: string
 }
 
 type ChatResponse = {
@@ -206,6 +209,8 @@ function toCanvasNode(value: unknown): CanvasNode | null {
     text: typeof node.text === "string" ? node.text : undefined,
     src: typeof node.src === "string" ? node.src : undefined,
     content: typeof node.content === "string" ? node.content : undefined,
+    contextEnabled: node.contextEnabled === true,
+    contextLabel: typeof node.contextLabel === "string" ? node.contextLabel : undefined,
   }
 }
 
@@ -376,6 +381,7 @@ export default function WorkspacePage() {
   const [chatSessions, setChatSessions] = useState<SessionSummary[]>([])
   const [sessionListLoading, setSessionListLoading] = useState(false)
   const [chatHistoryLoading, setChatHistoryLoading] = useState(false)
+  const [hoveredNodeId, setHoveredNodeId] = useState("")
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const dragStartRef = useRef<DragStartState | null>(null)
   const panStartRef = useRef<PanStartState | null>(null)
@@ -691,6 +697,13 @@ export default function WorkspacePage() {
     if (event.button !== 0) {
       return
     }
+    const target = event.target
+    if (
+      target instanceof HTMLElement &&
+      target.closest('textarea,input,button,select,option,a,video,[data-node-interactive="true"]')
+    ) {
+      return
+    }
     event.preventDefault()
     event.stopPropagation()
     const node = nodes.find((item) => item.id === nodeId)
@@ -777,6 +790,33 @@ export default function WorkspacePage() {
 
   function updateTextNode(id: string, text: string) {
     setNodes((prev) => prev.map((node) => (node.id === id ? { ...node, text } : node)))
+  }
+
+  function updateNodeMeta(id: string, patch: Partial<Pick<CanvasNode, "content" | "contextEnabled" | "contextLabel">>) {
+    setNodes((prev) => prev.map((node) => (node.id === id ? { ...node, ...patch } : node)))
+  }
+
+  function buildAgentCanvasContext() {
+    const contextualNodes = nodes
+      .filter((node) => node.contextEnabled)
+      .filter((node) => (node.content && node.content.trim().length > 0) || (node.text && node.text.trim().length > 0) || node.src)
+      .slice(0, 20)
+    if (contextualNodes.length === 0) {
+      return ""
+    }
+    return contextualNodes
+      .map((node, index) => {
+        const title = node.contextLabel?.trim() || node.title
+        const meta = node.content?.trim() || ""
+        const detail =
+          node.type === "text"
+            ? (node.text?.trim() || "")
+            : node.type === "image"
+              ? `图片资源: ${node.src || "未知"}`
+              : `视频资源: ${node.src || "未知"}`
+        return `节点${index + 1}（${node.type}）\n标题: ${title}\n核心元信息: ${meta || "无"}\n节点内容: ${detail || "无"}`
+      })
+      .join("\n\n")
   }
 
   function handleAssetDragStart(event: React.DragEvent<HTMLDivElement>, asset: Asset) {
@@ -891,6 +931,7 @@ export default function WorkspacePage() {
       return
     }
     const prompt = chatInput.trim()
+    const canvasContext = buildAgentCanvasContext()
     const userMessageAt = new Date().toISOString()
     setMessages((prev) => [...prev, { role: "user", text: prompt, createdAt: userMessageAt }])
     setChatInput("")
@@ -905,6 +946,7 @@ export default function WorkspacePage() {
             projectId,
             canvasId: activeCanvasId || undefined,
             canvasName,
+            canvasContext: canvasContext || undefined,
             prompt,
             waitForResult: true,
             timeoutMs: 90000,
@@ -1211,28 +1253,58 @@ export default function WorkspacePage() {
               key={node.id}
               className="absolute rounded-xl border border-black/12 bg-white p-2 shadow-[0_6px_18px_rgba(0,0,0,0.08)]"
               style={{ left: node.x, top: node.y, width: node.width, height: node.height }}
-              onMouseDown={(event) => startNodeDrag(event, node.id)}
+              onMouseEnter={() => setHoveredNodeId(node.id)}
+              onMouseLeave={() => setHoveredNodeId((current) => (current === node.id ? "" : current))}
             >
-              <div className="mb-1 flex items-center justify-between">
+              <div className="mb-1 flex cursor-move items-center justify-between" onMouseDown={(event) => startNodeDrag(event, node.id)}>
                 <p className="truncate text-xs font-medium">{node.title}</p>
                 <Badge variant="outline">{node.type}</Badge>
               </div>
-              {node.type === "text" ? (
-                <Textarea
-                  value={node.text || ""}
-                  onChange={(event) => updateTextNode(node.id, event.target.value)}
-                  rows={Math.max(4, Math.floor(node.height / 36))}
-                  className="h-[calc(100%-32px)] resize-none border-0 p-0 shadow-none focus-visible:ring-0"
-                />
-              ) : null}
-              {node.type === "image" && node.src ? (
-                <div className="relative h-[calc(100%-32px)] w-full overflow-hidden rounded-md">
-                  <Image src={node.src} alt={node.title} fill unoptimized className="object-cover" />
+              <div className="flex h-[calc(100%-30px)] min-h-0 flex-col">
+                <div className="min-h-0 flex-1">
+                  {node.type === "text" ? (
+                    <Textarea
+                      value={node.text || ""}
+                      onChange={(event) => updateTextNode(node.id, event.target.value)}
+                      rows={Math.max(4, Math.floor(node.height / 36))}
+                      className="h-full resize-none border-0 p-0 shadow-none focus-visible:ring-0"
+                    />
+                  ) : null}
+                  {node.type === "image" && node.src ? (
+                    <div className="relative h-full w-full overflow-hidden rounded-md">
+                      <Image src={node.src} alt={node.title} fill unoptimized className="object-cover" />
+                    </div>
+                  ) : null}
+                  {node.type === "video" && node.src ? (
+                    <video src={node.src} controls className="h-full w-full rounded-md object-cover" />
+                  ) : null}
                 </div>
-              ) : null}
-              {node.type === "video" && node.src ? (
-                <video src={node.src} controls className="h-[calc(100%-32px)] w-full rounded-md object-cover" />
-              ) : null}
+                {hoveredNodeId === node.id ? (
+                  <div data-node-interactive="true" className="mt-2 rounded-md border border-black/10 bg-black/[0.02] p-2">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[11px] text-black/60">注入 Agent 上下文</p>
+                      <Switch
+                        size="sm"
+                        checked={node.contextEnabled === true}
+                        onCheckedChange={(checked) => updateNodeMeta(node.id, { contextEnabled: checked === true })}
+                      />
+                    </div>
+                    <Input
+                      value={node.contextLabel || ""}
+                      onChange={(event) => updateNodeMeta(node.id, { contextLabel: event.target.value })}
+                      placeholder="元信息标题（可选）"
+                      className="mt-2 h-7 text-xs"
+                    />
+                    <Textarea
+                      value={node.content || ""}
+                      onChange={(event) => updateNodeMeta(node.id, { content: event.target.value })}
+                      rows={2}
+                      placeholder="补充这个节点对 Agent 有价值的核心元信息"
+                      className="mt-2 resize-none text-xs"
+                    />
+                  </div>
+                ) : null}
+              </div>
             </div>
           ))}
         </div>

@@ -20,6 +20,7 @@ const chatSchema = z.object({
   projectId: z.string().min(1).max(128).optional(),
   canvasId: z.string().min(1).max(128).optional(),
   canvasName: z.string().min(1).max(128).optional(),
+  canvasContext: z.string().max(20000).optional(),
   correlationId: z.string().min(1).max(128).optional(),
   traceId: z.string().min(1).max(128).optional(),
   spanId: z.string().min(1).max(128).optional(),
@@ -161,6 +162,10 @@ export async function POST(request: Request) {
   const projectId = parsed.data.projectId
   const canvasId = parsed.data.canvasId?.trim()
   const canvasName = parsed.data.canvasName?.trim()
+  const canvasContext = parsed.data.canvasContext?.trim()
+  const enrichedPrompt = canvasContext
+    ? `【画布节点上下文】\n${canvasContext}\n\n【用户输入】\n${prompt}`
+    : prompt
   if (projectId) {
     await assertProjectAccess(user.id, projectId)
   }
@@ -171,6 +176,7 @@ export async function POST(request: Request) {
 
   const contextEventPayload = {
     sessionId,
+    canvasContext: canvasContext || null,
     memory: memories.map((memory) => ({
       role: memory.role,
       content: memory.content,
@@ -248,7 +254,7 @@ export async function POST(request: Request) {
 
   if (!waitForResult) {
     const accepted = await kairo.sendUserMessage({
-      prompt,
+      prompt: enrichedPrompt,
       targetAgentId: parsed.data.targetAgentId,
       userId: user.id,
       projectId,
@@ -280,7 +286,7 @@ export async function POST(request: Request) {
   }
 
   const result = await kairo.invokeAgent({
-    prompt,
+    prompt: enrichedPrompt,
     targetAgentId: parsed.data.targetAgentId,
     timeoutMs: parsed.data.timeoutMs,
     userId: user.id,
