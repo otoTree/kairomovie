@@ -25,6 +25,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { useAuthSession } from "@/hooks/use-auth-session"
@@ -382,6 +383,7 @@ export default function WorkspacePage() {
   const [sessionListLoading, setSessionListLoading] = useState(false)
   const [chatHistoryLoading, setChatHistoryLoading] = useState(false)
   const [hoveredNodeId, setHoveredNodeId] = useState("")
+  const [activeNodeId, setActiveNodeId] = useState("")
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const dragStartRef = useRef<DragStartState | null>(null)
   const panStartRef = useRef<PanStartState | null>(null)
@@ -794,6 +796,24 @@ export default function WorkspacePage() {
 
   function updateNodeMeta(id: string, patch: Partial<Pick<CanvasNode, "content" | "contextEnabled" | "contextLabel">>) {
     setNodes((prev) => prev.map((node) => (node.id === id ? { ...node, ...patch } : node)))
+  }
+
+  function addNodeToChat(node: CanvasNode) {
+    const lines = [node.contextLabel?.trim() || node.title, node.content?.trim() || "", node.text?.trim() || "", node.src || ""]
+      .filter((item) => item.length > 0)
+      .join("\n")
+    if (!lines) {
+      setMessage("当前节点没有可添加到对话的内容")
+      return
+    }
+    setChatInput((current) => (current ? `${current}\n${lines}` : lines))
+    setMessage("已添加到对话输入框")
+  }
+
+  function removeNode(nodeId: string) {
+    setNodes((prev) => prev.filter((node) => node.id !== nodeId))
+    setHoveredNodeId((current) => (current === nodeId ? "" : current))
+    setActiveNodeId((current) => (current === nodeId ? "" : current))
   }
 
   function buildAgentCanvasContext() {
@@ -1241,6 +1261,14 @@ export default function WorkspacePage() {
             backgroundSize: "48px 48px",
             position: "relative",
           }}
+          onMouseDownCapture={(event) => {
+            if (event.button !== 0) {
+              return
+            }
+            if (event.target === event.currentTarget) {
+              setActiveNodeId("")
+            }
+          }}
         >
           {guides.x !== null ? (
             <div className="absolute top-0 h-full border-l border-black/25" style={{ left: guides.x, pointerEvents: "none" }} />
@@ -1248,65 +1276,109 @@ export default function WorkspacePage() {
           {guides.y !== null ? (
             <div className="absolute left-0 w-full border-t border-black/25" style={{ top: guides.y, pointerEvents: "none" }} />
           ) : null}
-          {nodes.map((node) => (
-            <div
-              key={node.id}
-              className="absolute rounded-xl border border-black/12 bg-white p-2 shadow-[0_6px_18px_rgba(0,0,0,0.08)]"
-              style={{ left: node.x, top: node.y, width: node.width, height: node.height }}
-              onMouseEnter={() => setHoveredNodeId(node.id)}
-              onMouseLeave={() => setHoveredNodeId((current) => (current === node.id ? "" : current))}
-            >
-              <div className="mb-1 flex cursor-move items-center justify-between" onMouseDown={(event) => startNodeDrag(event, node.id)}>
-                <p className="truncate text-xs font-medium">{node.title}</p>
-                <Badge variant="outline">{node.type}</Badge>
-              </div>
-              <div className="flex h-[calc(100%-30px)] min-h-0 flex-col">
-                <div className="min-h-0 flex-1">
-                  {node.type === "text" ? (
-                    <Textarea
-                      value={node.text || ""}
-                      onChange={(event) => updateTextNode(node.id, event.target.value)}
-                      rows={Math.max(4, Math.floor(node.height / 36))}
-                      className="h-full resize-none border-0 p-0 shadow-none focus-visible:ring-0"
-                    />
-                  ) : null}
-                  {node.type === "image" && node.src ? (
-                    <div className="relative h-full w-full overflow-hidden rounded-md">
-                      <Image src={node.src} alt={node.title} fill unoptimized className="object-cover" />
-                    </div>
-                  ) : null}
-                  {node.type === "video" && node.src ? (
-                    <video src={node.src} controls className="h-full w-full rounded-md object-cover" />
-                  ) : null}
-                </div>
-                {hoveredNodeId === node.id ? (
-                  <div data-node-interactive="true" className="mt-2 rounded-md border border-black/10 bg-black/[0.02] p-2">
-                    <div className="flex items-center justify-between">
-                      <p className="text-[11px] text-black/60">注入 Agent 上下文</p>
-                      <Switch
+          {nodes.map((node) => {
+            const isNodeActive = activeNodeId === node.id
+            const showNodeToolbar = hoveredNodeId === node.id || isNodeActive
+            return (
+              <div
+                key={node.id}
+                className={`absolute rounded-xl border bg-white p-2 shadow-[0_6px_18px_rgba(0,0,0,0.08)] transition ${
+                  isNodeActive ? "z-10 border-sky-500 shadow-[0_10px_22px_rgba(2,132,199,0.2)]" : "border-black/12"
+                }`}
+                style={{ left: node.x, top: node.y, width: node.width, height: node.height }}
+                onMouseEnter={() => setHoveredNodeId(node.id)}
+                onMouseLeave={() => setHoveredNodeId((current) => (current === node.id ? "" : current))}
+                onMouseDown={() => setActiveNodeId(node.id)}
+              >
+                {showNodeToolbar ? (
+                  <div data-node-interactive="true" className="absolute left-1/2 top-0 z-30 -translate-x-1/2 -translate-y-[calc(100%+8px)]">
+                    <div className="flex items-center gap-1 rounded-full border border-black/12 bg-white/98 px-2 py-1 shadow-[0_10px_24px_rgba(0,0,0,0.14)] backdrop-blur">
+                      <Button
                         size="sm"
-                        checked={node.contextEnabled === true}
-                        onCheckedChange={(checked) => updateNodeMeta(node.id, { contextEnabled: checked === true })}
-                      />
+                        variant="ghost"
+                        className="h-7 cursor-pointer rounded-full px-2 text-xs"
+                        onClick={() => addNodeToChat(node)}
+                      >
+                        添加到对话
+                      </Button>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button size="sm" variant="ghost" className="h-7 cursor-pointer rounded-full px-2 text-xs">
+                            上下文
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent align="center" side="bottom" className="w-72 border-black/10 bg-white p-3">
+                          <div data-node-interactive="true">
+                            <div className="flex items-center justify-between">
+                              <p className="text-[11px] text-black/60">注入 Agent 上下文</p>
+                              <Switch
+                                size="sm"
+                                checked={node.contextEnabled === true}
+                                onCheckedChange={(checked) => updateNodeMeta(node.id, { contextEnabled: checked === true })}
+                              />
+                            </div>
+                            <Input
+                              value={node.contextLabel || ""}
+                              onChange={(event) => updateNodeMeta(node.id, { contextLabel: event.target.value })}
+                              placeholder="元信息标题（可选）"
+                              className="mt-2 h-7 text-xs"
+                            />
+                            <Textarea
+                              value={node.content || ""}
+                              onChange={(event) => updateNodeMeta(node.id, { content: event.target.value })}
+                              rows={2}
+                              placeholder="补充这个节点对 Agent 有价值的核心元信息"
+                              className="mt-2 resize-none text-xs"
+                            />
+                          </div>
+                        </PopoverContent>
+                      </Popover>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="size-7 cursor-pointer rounded-full"
+                        onClick={() => removeNode(node.id)}
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
                     </div>
-                    <Input
-                      value={node.contextLabel || ""}
-                      onChange={(event) => updateNodeMeta(node.id, { contextLabel: event.target.value })}
-                      placeholder="元信息标题（可选）"
-                      className="mt-2 h-7 text-xs"
-                    />
-                    <Textarea
-                      value={node.content || ""}
-                      onChange={(event) => updateNodeMeta(node.id, { content: event.target.value })}
-                      rows={2}
-                      placeholder="补充这个节点对 Agent 有价值的核心元信息"
-                      className="mt-2 resize-none text-xs"
-                    />
                   </div>
                 ) : null}
+                {isNodeActive ? (
+                  <>
+                    <div className="absolute -left-1 -top-1 size-2 rounded-full border border-sky-500 bg-white" />
+                    <div className="absolute -right-1 -top-1 size-2 rounded-full border border-sky-500 bg-white" />
+                    <div className="absolute -bottom-1 -left-1 size-2 rounded-full border border-sky-500 bg-white" />
+                    <div className="absolute -bottom-1 -right-1 size-2 rounded-full border border-sky-500 bg-white" />
+                  </>
+                ) : null}
+                <div className="mb-1 flex cursor-move items-center justify-between" onMouseDown={(event) => startNodeDrag(event, node.id)}>
+                  <p className="truncate text-xs font-medium">{node.title}</p>
+                  <Badge variant="outline">{node.type}</Badge>
+                </div>
+                <div className="flex h-[calc(100%-30px)] min-h-0 flex-col">
+                  <div className="min-h-0 flex-1">
+                    {node.type === "text" ? (
+                      <Textarea
+                        value={node.text || ""}
+                        onChange={(event) => updateTextNode(node.id, event.target.value)}
+                        rows={Math.max(4, Math.floor(node.height / 36))}
+                        className="h-full resize-none border-0 p-0 shadow-none focus-visible:ring-0"
+                      />
+                    ) : null}
+                    {node.type === "image" && node.src ? (
+                      <div className="relative h-full w-full overflow-hidden rounded-md">
+                        <Image src={node.src} alt={node.title} fill unoptimized className="object-cover" />
+                      </div>
+                    ) : null}
+                    {node.type === "video" && node.src ? (
+                      <video src={node.src} controls className="h-full w-full rounded-md object-cover" />
+                    ) : null}
+                  </div>
+                </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       </div>
 
